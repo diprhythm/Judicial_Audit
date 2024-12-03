@@ -1,0 +1,165 @@
+import os
+import pandas as pd
+import re
+
+def process_excel_files(folder_path, output_path, include_additional_sheets='Y'):
+    # 创建一个新的DataFrame，用于存储最终的数据
+    columns = ["账户名", "交易卡号", "交易账号", "交易日期", "交易时间", "交易金额", "流入", "流出", "净流", "余额",
+               "公式余额", "公式校验", "收付标志", "交易对手账卡号", "对手户名", "对手开户银行", "摘要说明", "交易币种",
+               "备注", "查询反馈结果原因", "选取"]
+    final_df = pd.DataFrame(columns=columns)
+
+    # 获取文件夹中的所有文件
+    files = os.listdir(folder_path)
+    transaction_files = [file for file in files if file.endswith("银行交易明细.xlsx") and not file.startswith('~$')]
+    account_files = [file for file in files if file.endswith("银行账户信息.xlsx") and not file.startswith('~$')]
+    personnel_files = [file for file in files if file.endswith("银行人员信息.xlsx") and not file.startswith('~$')]
+
+    # 读取银行账户信息并清洗数据
+    account_info = pd.concat([pd.read_excel(os.path.join(folder_path, file), dtype=str) for file in account_files],
+                             ignore_index=True)
+
+    # 读取和整理银行交易明细
+    all_transaction_data = []
+    for file in transaction_files:
+        transaction_df = pd.read_excel(os.path.join(folder_path, file), dtype=str)
+        all_transaction_data.append(transaction_df)
+
+        # 提取并整理数据
+        def extract_date_time(datetime_str):
+            try:
+                date, time = datetime_str.split()
+                return date, time
+            except Exception:
+                return '', ''
+
+        transaction_df['交易日期'], transaction_df['交易时间'] = zip(*transaction_df['交易时间'].map(extract_date_time))
+
+        new_rows = []
+        for _, row in transaction_df.iterrows():
+            account_name = ''
+            transaction_account_number = row['交易账号']
+            transaction_card_number = row['交易卡号']
+
+            # 优先通过交易账号匹配账户名
+            if not account_info[account_info['交易账号'] == transaction_account_number].empty:
+                account_name = \
+                account_info[account_info['交易账号'] == transaction_account_number]['账户开户名称'].values[0]
+            # 如果交易账号匹配不到，再通过交易卡号匹配账户名
+            elif not account_info[account_info['交易卡号'] == transaction_card_number].empty:
+                account_name = account_info[account_info['交易卡号'] == transaction_card_number]['账户开户名称'].values[0]
+
+            inflow = row['交易金额'] if row['收付标志'] == '进' else ''
+            outflow = row['交易金额'] if row['收付标志'] == '出' else ''
+            net_flow = float(inflow) - float(outflow) if inflow and outflow else float(inflow) if inflow else -float(outflow) if outflow else ''
+
+            summary = ' '.join([str(row[col]) for col in transaction_df.columns if '摘要' in col])
+
+            new_row = {
+                "账户名": account_name,
+                "交易卡号": row['交易卡号'],
+                "交易账号": row['交易账号'],
+                "交易日期": row['交易日期'],
+                "交易时间": row['交易时间'],
+                "交易金额": row['交易金额'],
+                "流入": inflow,
+                "流出": outflow,
+                "净流": net_flow,
+                "余额": row['交易余额'],
+                "公式余额": '',
+                "公式校验": '',
+                "收付标志": row['收付标志'],
+                "交易对手账卡号": row['交易对手账卡号'],
+                "对手户名": row['对手户名'],
+                "对手开户银行": row['对手开户银行'],
+                "摘要说明": summary,
+                "交易币种": row['交易币种'],
+                "备注": '',
+                "查询反馈结果原因": '',
+                "选取": ''
+            }
+
+            new_rows.append(new_row)
+
+        new_rows_df = pd.DataFrame(new_rows).dropna(how='all')
+        if not new_rows_df.empty:
+            final_df = pd.concat([final_df, new_rows_df], ignore_index=True)
+
+    # 在最终的 DataFrame 中根据交易账号、交易日期和交易时间进行排序
+    final_df['交易日期时间'] = pd.to_datetime(final_df['交易日期'] + ' ' + final_df['交易时间'], errors='coerce')
+    final_df = final_df.sort_values(by=['交易账号', '交易日期时间']).drop(columns=['交易日期时间'])
+
+    # 确保交易卡号和交易账号列为字符串类型
+    final_df['交易卡号'] = final_df['交易卡号'].astype(str)
+    final_df['交易账号'] = final_df['交易账号'].astype(str)
+
+    # 确保数值列为数值类型，以防止导出时被误认为文本
+    numeric_columns = ['交易金额', '流入', '流出', '净流', '余额', '公式余额', '公式校验']
+    for col in numeric_columns:
+        final_df[col] = pd.to_numeric(final_df[col], errors='coerce')
+
+    # 按交易账号分组并生成单独的工作簿
+    grouped = final_df.groupby('交易账号')
+
+    for account, group in grouped:
+        # 获取对应的账户名和开户银行
+        account_name = str(
+            account_info[account_info['交易账号'] == account]['账户开户名称'].fillna('').values[0]) if not account_info[
+            account_info['交易账号'] == account].empty else ''
+        bank_name = str(account_info[account_info['交易账号'] == account]['账号开户银行'].fillna('').values[0]) if not \
+        account_info[account_info['交易账号'] == account].empty else ''
+
+        # 确定文件名：去掉下划线，并忽略空值的部分
+        file_name = ''.join(filter(None, [account_name, account, bank_name])) + '.xlsx'
+        output_file_path = os.path.join(output_path, file_name)
+
+        # 写入 Excel
+        writer = pd.ExcelWriter(output_file_path, engine='xlsxwriter')
+
+        # 写入整理的银行流水表
+        group.to_excel(writer, index=False, sheet_name='银行流水整理表（完整）')
+
+        if include_additional_sheets == 'Y':
+            # 写入所有读取的银行交易明细数据
+            all_transaction_data_df = pd.concat(all_transaction_data, ignore_index=True)
+            all_transaction_data_df.to_excel(writer, index=False, sheet_name='交易明细（原）')
+
+            # 写入所有读取的银行账户信息数据
+            account_info.to_excel(writer, index=False, sheet_name='账户信息（原）')
+
+            # 写入所有读取的银行人员信息数据（如果存在）
+            if personnel_files:
+                all_personnel_data = [pd.read_excel(os.path.join(folder_path, file), dtype=str) for file in personnel_files]
+                all_personnel_data_df = pd.concat(all_personnel_data, ignore_index=True)
+                all_personnel_data_df.to_excel(writer, index=False, sheet_name='人员信息（原）')
+
+        # 获取 xlsxwriter workbook 对象
+        workbook = writer.book
+        worksheet1 = writer.sheets['银行流水整理表（完整）']
+
+        # 设置所有列格式以防止科学计数法，数值列以数值格式显示
+        format_no_scientific = workbook.add_format({'num_format': '0'})
+        for col_num, col_name in enumerate(group.columns):
+            if col_name in numeric_columns:
+                worksheet1.set_column(col_num, col_num, None, format_no_scientific)
+
+        if include_additional_sheets == 'Y':
+            worksheet2 = writer.sheets['交易明细（原）']
+            worksheet3 = writer.sheets['账户信息（原）']
+            for col_num, col_name in enumerate(all_transaction_data_df.columns):
+                if col_name in numeric_columns:
+                    worksheet2.set_column(col_num, col_num, None, format_no_scientific)
+            for col_num, col_name in enumerate(account_info.columns):
+                worksheet3.set_column(col_num, col_num, None, format_no_scientific)
+            if personnel_files:
+                worksheet4 = writer.sheets['人员信息（原）']
+                for col_num, col_name in enumerate(all_personnel_data_df.columns):
+                    worksheet4.set_column(col_num, col_num, None, format_no_scientific)
+
+        writer.close()
+
+# 使用示例
+folder_path = r'文件输入路径'
+output_path = r'文件输出路径'
+#是否包含额外的三张表
+process_excel_files(folder_path, output_path, include_additional_sheets='N')
