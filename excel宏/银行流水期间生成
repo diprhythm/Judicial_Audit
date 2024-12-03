@@ -1,0 +1,75 @@
+Sub 银行流水期间生成()
+    Dim ws As Worksheet
+    Dim firstDate As Variant
+    Dim lastDate As Variant
+    Dim lastRow As Long
+    Dim dateRange As Range
+    Dim visibleRange As Range
+    Dim outputCell As Range
+    Dim dateColumn As Range
+    Dim dateColumnIndex As Integer
+    Dim currentWb As Workbook
+    
+    ' 设置当前活动工作簿
+    Set currentWb = ActiveWorkbook
+    
+    ' 尝试查找“提取”工作表
+    On Error Resume Next
+    Set ws = currentWb.Sheets("提取")
+    On Error GoTo 0
+    
+    ' 如果未找到“提取”工作表，查找“银行流水整理表（完整）”表
+    If ws Is Nothing Then
+        On Error Resume Next
+        Set ws = currentWb.Sheets("银行流水整理表（完整）")
+        On Error GoTo 0
+    End If
+    
+    ' 如果未找到任何工作表，退出并提示
+    If ws Is Nothing Then
+        MsgBox "未找到“提取”或“银行流水整理表（完整）”工作表。", vbExclamation
+        Exit Sub
+    End If
+    
+    ' 查找表头为“日期”或“交易日期”的列
+    Set dateColumn = ws.Rows(1).Find(What:="日期", LookIn:=xlValues, LookAt:=xlWhole)
+    If dateColumn Is Nothing Then
+        Set dateColumn = ws.Rows(1).Find(What:="交易日期", LookIn:=xlValues, LookAt:=xlWhole)
+    End If
+    
+    ' 如果找到“日期”或“交易日期”列
+    If Not dateColumn Is Nothing Then
+        dateColumnIndex = dateColumn.Column
+        
+        ' 找到最后一行
+        lastRow = ws.Cells(ws.Rows.Count, dateColumnIndex).End(xlUp).Row
+        
+        ' 获取经过筛选后的可见单元格，跳过第一行表头
+        On Error Resume Next
+        Set visibleRange = ws.Range(ws.Cells(2, dateColumnIndex), ws.Cells(lastRow, dateColumnIndex)).SpecialCells(xlCellTypeVisible)
+        On Error GoTo 0
+        
+        ' 检查是否有可见的单元格
+        If Not visibleRange Is Nothing And visibleRange.Cells.Count > 0 Then
+            ' 如果有筛选后的可见单元格，则使用这些单元格
+            firstDate = visibleRange.Cells(1, 1).Value
+            lastDate = visibleRange.Cells(visibleRange.Cells.Count, 1).Value
+        Else
+            ' 如果没有筛选后的可见单元格，则直接使用整列
+            Set dateRange = ws.Range(ws.Cells(2, dateColumnIndex), ws.Cells(lastRow, dateColumnIndex))
+            firstDate = dateRange.Cells(1, 1).Value
+            lastDate = dateRange.Cells(dateRange.Cells.Count, 1).Value
+        End If
+        
+        ' 检查日期是否有效并将格式化的日期写入当前选中的单元格
+        If IsDate(firstDate) And IsDate(lastDate) Then
+            Set outputCell = Selection
+            outputCell.Value = Format(firstDate, "yyyy.mm.dd") & "-" & Format(lastDate, "yyyy.mm.dd")
+        Else
+            MsgBox "找到的日期无效。", vbExclamation
+        End If
+    Else
+        MsgBox "未找到名为“日期”或“交易日期”的列。", vbExclamation
+    End If
+End Sub
+
