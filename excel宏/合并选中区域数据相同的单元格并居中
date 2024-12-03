@@ -1,0 +1,85 @@
+Sub 合并选中区域数据相同的单元格并居中()
+    Dim selectedArea As Range
+    Dim currentCell As Range
+    Dim startCell As Range
+    Dim endCell As Range
+    Dim currentValue As Variant
+    Dim mergedRange As Range
+    Dim processedCells As Collection
+    Dim cellKey As String
+    Dim cellInRange As Range
+
+    ' 关闭合并单元格的警告提示和屏幕更新
+    Application.DisplayAlerts = False
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    ' 获取选中的区域
+    Set selectedArea = Selection
+    Set processedCells = New Collection
+
+    ' 遍历选中区域的每个单元格
+    For Each currentCell In selectedArea
+        ' 跳过空白单元格
+        If Not IsEmpty(currentCell.Value) Then
+            cellKey = currentCell.Address
+            ' 只有当当前单元格未被处理时
+            If Not currentCell.MergeCells And Not IsInCollection(processedCells, cellKey) Then
+                currentValue = currentCell.Value
+                Set startCell = currentCell
+                Set endCell = currentCell
+
+                ' 向右合并相邻相同内容的单元格
+                Do While endCell.Column < selectedArea.Columns(selectedArea.Columns.Count).Column And _
+                          endCell.Offset(0, 1).Value = currentValue And _
+                          Not IsInCollection(processedCells, endCell.Offset(0, 1).Address) And _
+                          Not IsEmpty(endCell.Offset(0, 1).Value)
+                    Set endCell = endCell.Offset(0, 1)
+                Loop
+
+                ' 向下合并相邻相同内容的单元格
+                Do While endCell.Row < selectedArea.Rows(selectedArea.Rows.Count).Row And _
+                          endCell.Offset(1, 0).Value = currentValue And _
+                          Not IsInCollection(processedCells, endCell.Offset(1, 0).Address) And _
+                          Not IsEmpty(endCell.Offset(1, 0).Value)
+                    Set endCell = endCell.Offset(1, 0)
+                Loop
+
+                ' 如果起始和结束单元格不相同，进行合并
+                If startCell.Address <> endCell.Address Then
+                    Set mergedRange = Range(startCell, endCell)
+                    If Not mergedRange Is Nothing Then
+                        With mergedRange
+                            .Merge
+                            .HorizontalAlignment = xlCenter
+                            .VerticalAlignment = xlCenter
+                        End With
+
+                        ' 标记已处理的单元格
+                        For Each cellInRange In mergedRange
+                            processedCells.Add cellInRange.Address, cellInRange.Address
+                        Next cellInRange
+                    End If
+                End If
+            End If
+
+            ' 将当前非空白单元格设置为居中对齐
+            currentCell.HorizontalAlignment = xlCenter
+            currentCell.VerticalAlignment = xlCenter
+        End If
+    Next currentCell
+
+    ' 重新开启合并单元格的警告提示和屏幕更新
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+End Sub
+
+' 检查单元格地址是否已经在集合中
+Function IsInCollection(col As Collection, key As String) As Boolean
+    On Error Resume Next
+    IsInCollection = Not IsEmpty(col(key))
+    On Error GoTo 0
+End Function
+
+
