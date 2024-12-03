@@ -1,0 +1,52 @@
+Sub 计算公式余额和公式校验()
+    Dim ws As Worksheet
+    Dim selectedCell As Range
+    Dim lastRow As Long
+    Dim cell As Range
+    Dim prevValue As Double
+    Dim currentValue As Double
+    
+    ' 获取当前工作表和选中单元格
+    Set ws = Selection.Worksheet
+    Set selectedCell = Selection
+    
+    ' 获取J列最后一个非空单元格的行号
+    lastRow = ws.Cells(ws.Rows.Count, selectedCell.Column - 1).End(xlUp).Row
+    
+    ' 关闭屏幕更新和自动计算
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    
+    ' 初始化选中单元格K1的值为J1的值
+    selectedCell.Value = ws.Cells(selectedCell.Row, selectedCell.Column - 1).Value
+    prevValue = selectedCell.Value
+    
+    ' 计算K列的值，并向下填充
+    For Each cell In ws.Range(selectedCell.Offset(1, 0), ws.Cells(lastRow, selectedCell.Column)).SpecialCells(xlCellTypeVisible)
+        ' 当I列或J列有空值时，停止填充
+        If ws.Cells(cell.Row, selectedCell.Column - 2).Value = "" Or ws.Cells(cell.Row, selectedCell.Column - 1).Value = "" Then
+            Exit For
+        End If
+        
+        ' 计算K列的值 (K = 上一行K + 当前行I)
+        currentValue = prevValue + ws.Cells(cell.Row, selectedCell.Column - 2).Value
+        cell.Value = currentValue
+        prevValue = currentValue
+    Next cell
+    
+    ' 计算L列的值，并向下填充
+    For Each cell In ws.Range(selectedCell.Offset(0, 1), ws.Cells(lastRow, selectedCell.Column + 1)).SpecialCells(xlCellTypeVisible)
+        ' 当J列或K列有空值时，停止填充
+        If ws.Cells(cell.Row, selectedCell.Column - 1).Value = "" Or ws.Cells(cell.Row, selectedCell.Column).Value = "" Then
+            Exit For
+        End If
+        
+        ' 计算L列的值 (L = J - K)
+        cell.Value = ws.Cells(cell.Row, selectedCell.Column - 1).Value - ws.Cells(cell.Row, selectedCell.Column).Value
+    Next cell
+    
+    ' 重新启用屏幕更新和自动计算
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+End Sub
+
