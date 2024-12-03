@@ -1,0 +1,62 @@
+import os
+import pandas as pd
+from natsort import natsorted
+
+# 定义文件夹路径和输出文件路径
+folder_path = r"文件路径"
+output_file = os.path.join(folder_path, r"输出路径/拼接后的银行流水整理表.xlsx")
+
+# 用于存储拼接后的数据
+merged_df = pd.DataFrame()
+
+# 获取所有 Excel 文件，并进行自然排序
+file_list = []
+for root, dirs, files in os.walk(folder_path):
+    for file in files:
+        if file.endswith(".xlsx"):
+            file_list.append(os.path.join(root, file))
+
+# 对文件名进行自然排序
+file_list = natsorted(file_list)
+
+# 遍历排序后的文件列表
+for file_path in file_list:
+    file_name = os.path.basename(file_path)  # 获取文件名
+    try:
+        # 读取Excel文件中所有的表格
+        xls = pd.read_excel(file_path, sheet_name=None, dtype=str)
+
+        # 尝试查找表名为“银行流水整理表（完整）”或“提取”
+        if '银行流水整理表（完整）' in xls:
+            df = xls['银行流水整理表（完整）']
+        elif 'Sheet1' in xls:
+            df = xls['Sheet1']
+        else:
+            print(f"文件 {file_name} 没有找到所需的表格，跳过此文件")
+            continue
+
+        # 确保数值列存储为数值格式，假设这些列是要求和的数值列
+        numeric_columns = ['交易金额', '流入', '流出', '净流', '余额', '公式余额', '公式校验']  # 根据实际列名修改
+        for col in numeric_columns:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # 如果是第一个工作簿，保留表头
+        if merged_df.empty:
+            merged_df = df.copy()
+            # 添加索引列
+            merged_df.insert(0, '索引', file_name.replace('.xlsx', ''))
+        else:
+            # 对于后续文件，检查是否与之前表头重复，如果表头相同，则删除表头行
+            if df.columns.equals(merged_df.columns):
+                df = df.iloc[1:]  # 只删除表头，保留数据
+            # 添加索引列
+            df.insert(0, '索引', file_name.replace('.xlsx', ''))
+            merged_df = pd.concat([merged_df, df], ignore_index=True)
+    except Exception as e:
+        print(f"无法处理文件 {file_path}: {e}")
+
+# 将结果保存为新的Excel文件
+merged_df.to_excel(output_file, index=False)
+
+print(f"拼接完成，结果保存至 {output_file}")
