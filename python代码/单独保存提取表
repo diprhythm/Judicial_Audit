@@ -27,8 +27,8 @@ def extract_sheets(input_folder, output_folder):
                 print(f'已提取 {filename} 的“提取”工作表并保存为新文件。')
 
 # 设置文件路径
-input_folder = r'C:\Users\Administrator\Desktop\已整理小善流水\extract'  # 替换为你的输入文件夹路径
-output_folder = r'C:\Users\Administrator\Desktop\提取'  # 替换为你的输出文件夹路径
+input_folder = r'文件路径'  # 替换为你的输入文件夹路径
+output_folder = r'输出路径'  # 替换为你的输出文件夹路径
 
 # 调用函数
 extract_sheets(input_folder, output_folder)
