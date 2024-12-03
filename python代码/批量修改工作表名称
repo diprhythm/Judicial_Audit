@@ -1,0 +1,31 @@
+import os
+from openpyxl import load_workbook
+
+def rename_sheet_in_folder(folder_path, old_sheet_name, new_sheet_name):
+    # 遍历文件夹及其子文件夹中的所有 Excel 文件
+    for root, dirs, files in os.walk(folder_path):
+        for file in files:
+            if file.endswith(".xlsx"):  # 只处理Excel文件
+                file_path = os.path.join(root, file)
+                try:
+                    # 加载工作簿
+                    workbook = load_workbook(file_path)
+                    # 检查是否有要修改的表名
+                    if old_sheet_name in workbook.sheetnames:
+                        # 修改表名
+                        workbook[old_sheet_name].title = new_sheet_name
+                        # 保存修改后的工作簿
+                        workbook.save(file_path)
+                        print(f"已修改文件 {file_path} 中的表名为 {new_sheet_name}")
+                    else:
+                        print(f"文件 {file_path} 中没有找到表名 {old_sheet_name}")
+                except Exception as e:
+                    print(f"处理文件 {file_path} 时发生错误: {e}")
+
+# 设置文件夹路径、旧表名、新表名
+folder_path = r'文件路径'
+old_sheet_name = '汇总'
+new_sheet_name = '提取'
+
+# 执行重命名操作
+rename_sheet_in_folder(folder_path, old_sheet_name, new_sheet_name)
