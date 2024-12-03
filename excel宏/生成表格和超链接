@@ -1,0 +1,53 @@
+Sub 生成表格和超链接()
+    Dim selectedArea As Range
+    Dim currentCell As Range
+    Dim sheetName As String
+    Dim newSheet As Worksheet
+    Dim ws As Worksheet
+
+    ' 禁用屏幕更新和事件处理以提高效率
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+
+    ' 获取当前工作表
+    Set ws = ActiveSheet
+    
+    ' 获取选中的区域
+    Set selectedArea = Selection
+
+    ' 遍历选中的每个单元格
+    For Each currentCell In selectedArea
+        ' 跳过不可见的单元格、空白单元格和已处理的合并单元格区域
+        If Not IsEmpty(currentCell.Value) And currentCell.EntireRow.Hidden = False And currentCell.EntireColumn.Hidden = False Then
+            If currentCell.MergeCells Then
+                ' 如果单元格是合并单元格，则只处理第一个单元格
+                If currentCell.MergeArea.Cells(1, 1).Address = currentCell.Address Then
+                    sheetName = Trim(currentCell.Value)
+                    ' 创建新的工作表并命名
+                    On Error Resume Next
+                    Set newSheet = Sheets.Add(After:=Sheets(Sheets.Count))
+                    newSheet.Name = sheetName
+                    On Error GoTo 0
+                    ' 在当前单元格上创建超链接
+                    ws.Hyperlinks.Add Anchor:=currentCell, Address:="", SubAddress:="'" & sheetName & "'!A1", TextToDisplay:=sheetName
+                End If
+            Else
+                sheetName = Trim(currentCell.Value)
+                ' 创建新的工作表并命名
+                On Error Resume Next
+                Set newSheet = Sheets.Add(After:=Sheets(Sheets.Count))
+                newSheet.Name = sheetName
+                On Error GoTo 0
+                ' 在当前单元格上创建超链接
+                ws.Hyperlinks.Add Anchor:=currentCell, Address:="", SubAddress:="'" & sheetName & "'!A1", TextToDisplay:=sheetName
+            End If
+        End If
+    Next currentCell
+
+    ' 恢复屏幕更新和事件处理
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Application.DisplayAlerts = True
+End Sub
+
