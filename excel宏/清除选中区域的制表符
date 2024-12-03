@@ -1,0 +1,35 @@
+Sub 清除选中区域的制表符()
+    Dim cell As Range
+    Dim originalText As String
+    Dim fullWidthSpace As String
+    
+    ' 定义全角空格字符
+    fullWidthSpace = ChrW(12288) ' U+3000 对应的全角空格字符
+
+    ' 禁用屏幕更新和事件
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    ' 遍历选中区域的每个单元格
+    For Each cell In Selection
+        ' 获取单元格的原始文本
+        originalText = CStr(cell.Value)
+        
+        ' 去除制表符、半角空格和全角空格
+        originalText = Replace(originalText, vbTab, "")
+        originalText = Replace(originalText, " ", "") ' 去除半角空格
+        originalText = Replace(originalText, fullWidthSpace, "") ' 去除全角空格
+        
+        ' 如果文本长度大于15位（科学计数显示的典型长度），将其格式为文本
+        If Len(originalText) > 15 And IsNumeric(cell.Value) Then
+            cell.NumberFormat = "@"
+        End If
+        
+        ' 将结果重新赋值
+        cell.Value = originalText
+    Next cell
+
+    ' 恢复屏幕更新和事件
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+End Sub
