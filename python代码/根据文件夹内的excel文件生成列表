@@ -1,0 +1,33 @@
+import os
+import pandas as pd
+
+def generate_excel_from_filenames(folder_path, output_excel_path):
+    file_paths = []
+    file_names = []
+
+    for root, _, files in os.walk(folder_path):
+        for file in files:
+            if file.endswith('.xls') or file.endswith('.xlsx'):
+                file_path = os.path.join(root, file)
+                file_paths.append(root)
+                file_names.append(file)
+
+    df = pd.DataFrame({
+        "File Path": file_paths,
+        "File Name": file_names
+    })
+
+    # 确保 output_excel_path 以 .xlsx 结尾
+    if not output_excel_path.endswith('.xlsx'):
+        output_excel_path += '.xlsx'
+
+    try:
+        df.to_excel(output_excel_path, index=False)
+        print(f"文件路径和文件名已保存到 {output_excel_path}")
+    except PermissionError:
+        print(f"无法保存文件：{output_excel_path}，请检查文件是否正在被其他程序使用，或尝试更改文件路径。")
+
+folder_path = r"文件路径"
+output_excel_path = r"输出路径\流水列表.xlsx"
+
+generate_excel_from_filenames(folder_path, output_excel_path)
