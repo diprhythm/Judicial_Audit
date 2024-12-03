@@ -1,0 +1,23 @@
+import os
+import re
+
+# 替换为你的文件夹路径
+directory = r"文件路径"
+
+# 遍历文件夹中的文件
+for filename in os.listdir(directory):
+    # 匹配以数字开头并跟随 `、` 的文件名
+    match = re.match(r'^(\d+)、', filename)
+    if match:
+        # 提取数字并格式化为4位数
+        padded_number = f"{int(match.group(1)):04d}"  #04代表4位数 不足的会在前面补0
+        # 构建新的文件名并保留 `、` 分隔符
+        new_name = padded_number + '、' + filename[len(match.group(0)):]
+        # 获取完整路径
+        old_path = os.path.join(directory, filename)
+        new_path = os.path.join(directory, new_name)
+        # 重命名文件
+        os.rename(old_path, new_path)
+        print(f"Renamed: {filename} -> {new_name}")
+
+print("批量重命名完成。")
