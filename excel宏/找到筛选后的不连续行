@@ -1,0 +1,56 @@
+Sub 找到筛选后的不连续行()
+    Dim ws As Worksheet
+    Dim lastRow As Long
+    Dim i As Long
+    Dim visibleRows As Range
+    Dim prevRow As Long
+    Dim findNext As Boolean
+
+    ' 获取当前工作表
+    Set ws = ActiveSheet
+
+    ' 关闭屏幕更新和自动计算，提高运行效率
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+
+    ' 获取最后一行的行号
+    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+
+    ' 获取所有可见行
+    On Error Resume Next
+    Set visibleRows = ws.Range("A1:A" & lastRow).SpecialCells(xlCellTypeVisible)
+    On Error GoTo 0
+
+    If Not visibleRows Is Nothing Then
+        ' 忽略第一行，并初始化为第一个可见行的行号
+        prevRow = visibleRows.Areas(1).Row + 1
+        findNext = True ' 初始设定为查找第一个不连续行
+
+        For Each cell In visibleRows
+            ' 只有在跳跃超过1行时才进行处理
+            If cell.Row - prevRow > 1 And findNext Then
+                ' 重新启用屏幕更新和自动计算
+                Application.ScreenUpdating = True
+                Application.Calculation = xlCalculationAutomatic
+
+                ' 定位到第一个不连续的行并选中
+                ws.Cells(cell.Row, 1).Select
+                ' 提示是否继续查找下一个
+                If MsgBox("发现行与行之间的不连续行：" & vbCrLf & "在第 " & prevRow & " 行之后找到第 " & cell.Row & " 行。" & vbCrLf & "是否继续查找下一个？", vbYesNo + vbQuestion, "查找非连续行") = vbNo Then
+                    Exit Sub
+                End If
+                ' 重新关闭屏幕更新和自动计算
+                Application.ScreenUpdating = False
+                Application.Calculation = xlCalculationManual
+            End If
+            prevRow = cell.Row
+        Next cell
+    Else
+        MsgBox "未找到可见的行。", vbExclamation, "查找非连续行"
+    End If
+
+    ' 重新启用屏幕更新和自动计算
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+End Sub
+
