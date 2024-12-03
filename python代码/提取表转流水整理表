@@ -1,0 +1,78 @@
+import os
+import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.styles import NamedStyle
+
+def process_excel_files(input_folder, output_folder):
+    # 遍历输入文件夹及子文件夹中的所有Excel文件
+    for root, dirs, files in os.walk(input_folder):
+        for file in files:
+            if file.endswith('.xlsx'):
+                file_path = os.path.join(root, file)
+                try:
+                    # 强制将'对手账/卡号'列读取为字符串格式，避免科学计数
+                    df = pd.read_excel(file_path, sheet_name='提取', dtype={'对手账/卡号': str})
+                except Exception as e:
+                    print(f"无法读取文件 {file_path}: {e}")
+                    continue
+
+                # 创建新表的列
+                new_df = pd.DataFrame()
+
+                # 填充新表列数据
+                new_df['账户名'] = df['本账号名称'].fillna('')
+                new_df['交易卡号'] = df['本卡号'].astype(str).fillna('')  # 强制转换为字符串
+                new_df['交易账号'] = df['本账号'].astype(str).fillna('')  # 强制转换为字符串
+                new_df['交易日期'] = pd.to_datetime(df['日期'], errors='coerce').dt.date.fillna('')
+                new_df['交易时间'] = pd.to_datetime(df['日期'], errors='coerce').dt.time.fillna('')
+                new_df['交易金额'] = df['净流'].abs()  # 保持为数值格式
+                new_df['流入'] = pd.to_numeric(df['收入'], errors='coerce').fillna('')
+                new_df['流出'] = pd.to_numeric(df['支出'], errors='coerce').fillna('')
+                new_df['净流'] = pd.to_numeric(df['净流'], errors='coerce').fillna('')
+                new_df['余额'] = pd.to_numeric(df['余额'], errors='coerce').fillna('')
+                new_df['公式余额'] = pd.to_numeric(df['公式余额'], errors='coerce').fillna('')
+                new_df['公式校验'] = pd.to_numeric(df['公式校验'], errors='coerce').fillna('')
+                new_df['收付标志'] = df['净流'].apply(lambda x: '进' if x > 0 else '出')
+
+                # 强制将"对手账/卡号"列设为字符串，避免科学计数，并命名为“交易对手账卡号”
+                new_df['交易对手账卡号'] = df['对手账/卡号'].astype(str).fillna('')
+                new_df['对手户名'] = df['对手户名'].fillna('')
+                new_df['对手开户银行'] = df['对手开户行'].fillna('')
+                new_df['摘要说明'] = df['【摘要类】合并'].fillna('')
+                new_df['交易币种'] = '人民币'
+
+                # 添加备注列
+                new_df['备注'] = ''
+                new_df['查询反馈结果原因'] = ''
+                new_df['选取'] = ''
+
+                # 确保没有nan字符显示，保持空白
+                new_df = new_df.replace({pd.NaT: '', 'nan': '', pd.NA: ''})
+
+                # 文件名保持不变
+                output_file = os.path.join(output_folder, file)
+
+                # 将DataFrame保存到Excel文件
+                new_df.to_excel(output_file, index=False, sheet_name='Sheet1')
+
+                # 使用openpyxl加载工作簿并确保某些列设置为文本格式
+                wb = load_workbook(output_file)
+                ws = wb.active
+
+                # 创建文本样式，防止长数字显示为科学计数法
+                text_style = NamedStyle(name="text_style", number_format="@")
+
+                # 将"交易对手账卡号"列设为文本格式
+                for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=14, max_col=14):
+                    for cell in row:
+                        cell.style = text_style
+
+                # 保存工作簿
+                wb.save(output_file)
+
+                print(f"已保存处理后的文件: {output_file}")
+
+# 调用函数处理Excel文件
+input_folder = r'文件路径'
+output_folder = r'输出路径'
+process_excel_files(input_folder, output_folder)
