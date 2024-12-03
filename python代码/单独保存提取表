@@ -1,0 +1,34 @@
+import pandas as pd
+import os
+
+def extract_sheets(input_folder, output_folder):
+    # 确保输出文件夹存在
+    os.makedirs(output_folder, exist_ok=True)
+
+    # 遍历输入文件夹中的所有文件
+    for filename in os.listdir(input_folder):
+        if filename.endswith('.xlsx'):
+            file_path = os.path.join(input_folder, filename)
+            # 使用pandas读取工作簿的“提取”表
+            xls = pd.ExcelFile(file_path)
+            if '提取' in xls.sheet_names:
+                # 将“提取”表读取为DataFrame，并确保所有列均为文本格式
+                df = pd.read_excel(xls, sheet_name='提取', dtype=str)
+
+                # 将需要数值化的列转换为数值类型
+                columns_to_convert = ['收入', '支出', '净流', '余额', '公式余额', '公式校验']
+                for col in columns_to_convert:
+                    # 先把非数值的数据（例如URL）保留为字符串
+                    df[col] = pd.to_numeric(df[col], errors='ignore')
+
+                # 保存为新的工作簿，并确保内容以文本形式存储
+                output_file_path = os.path.join(output_folder, filename)
+                df.to_excel(output_file_path, index=False, engine='openpyxl')
+                print(f'已提取 {filename} 的“提取”工作表并保存为新文件。')
+
+# 设置文件路径
+input_folder = r'C:\Users\Administrator\Desktop\已整理小善流水\extract'  # 替换为你的输入文件夹路径
+output_folder = r'C:\Users\Administrator\Desktop\提取'  # 替换为你的输出文件夹路径
+
+# 调用函数
+extract_sheets(input_folder, output_folder)
