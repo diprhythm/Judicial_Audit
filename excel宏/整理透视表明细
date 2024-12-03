@@ -1,0 +1,185 @@
+Option Explicit
+
+Sub 整理透视表明细()
+    ' 激活当前工作表
+    Dim ws As Worksheet
+    Set ws = ActiveSheet
+    ws.Activate
+    
+    ' 在表头下方（第三行下方）插入一个空白行
+    ws.Rows(4).Insert Shift:=xlDown
+    
+    ' 设置[交易日期]列的正确日期格式
+    Dim dateCol As Range, lastRow As Long
+    Set dateCol = ws.Rows(3).Find("交易日期") ' 查找表头中的[交易日期]列
+    
+    If Not dateCol Is Nothing Then
+        ' 获取最后一行
+        lastRow = ws.Cells(ws.Rows.Count, dateCol.Column).End(xlUp).Row
+        
+        ' 遍历每一行，手动将交易日期列中的文本数据转换为日期
+        Dim cell As Range
+        For Each cell In ws.Range(ws.Cells(4, dateCol.Column), ws.Cells(lastRow, dateCol.Column))
+            If IsDate(cell.Value) Then
+                cell.Value = CDate(cell.Value) ' 强制转换为日期类型
+            End If
+        Next cell
+        
+        ' 设置为日期格式
+        ws.Columns(dateCol.Column).NumberFormat = "yyyy/mm/dd"
+    Else
+        MsgBox "未找到[交易日期]列。", vbExclamation
+        Exit Sub
+    End If
+    
+    ' 排序操作
+    Dim timeCol As Range
+    Set timeCol = ws.Rows(3).Find("交易时间")
+    
+    If Not dateCol Is Nothing And Not timeCol Is Nothing Then
+        ' 获取最后一行
+        lastRow = ws.Cells(ws.Rows.Count, dateCol.Column).End(xlUp).Row
+        
+        ' 排序: 先按交易日期升序，再按交易时间升序
+        ws.Sort.SortFields.Clear
+        ws.Sort.SortFields.Add key:=ws.Columns(dateCol.Column), _
+                               SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+        ws.Sort.SortFields.Add key:=ws.Columns(timeCol.Column), _
+                               SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+        With ws.Sort
+            ' 确保排序范围从第四行开始到最后一行
+            .SetRange ws.Range("A4:W" & lastRow) ' 调整这个范围，确保包含所有数据
+            .Header = xlYes ' 确认表头存在
+            .MatchCase = False
+            .Orientation = xlTopToBottom
+            .Apply
+        End With
+    End If
+    
+    ' 取消冻结窗格，避免干扰排序
+    ActiveWindow.FreezePanes = False
+
+    ' 如果当前单元格在一个表格中，则将表格转换为区域
+    If Not ws.ListObjects.Count = 0 Then
+        ws.ListObjects(1).Unlist
+    End If
+
+    ' 清除UVW列内容
+    ws.Columns("U:W").Clear
+    
+    ' 清除X列中的"时间"列
+    On Error Resume Next
+    ws.Columns("X").Delete
+    On Error GoTo 0
+
+    ' 清除整个工作表的填充颜色和边框
+    ws.Cells.Interior.Pattern = xlNone
+    ws.Cells.Borders.LineStyle = xlNone
+
+    Dim rng As Range
+    Dim contentBeforeBracket As String
+    Dim i As Long
+    
+    ' 获取表头第三行的范围
+    On Error Resume Next
+    Set rng = ws.Rows(3).SpecialCells(xlCellTypeConstants)
+    On Error GoTo 0
+    
+    If rng Is Nothing Then
+        MsgBox "第三行没有内容的单元格。", vbInformation
+        Exit Sub
+    End If
+
+    ' 设置第三行样式
+    With rng
+        .Interior.Color = 11711154
+        .Font.Color = RGB(0, 0, 0)
+        .WrapText = True
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+
+    ' 循环处理表头列，删除模型名称（移除方括号之前的内容）并设置列宽和隐藏列
+    For Each cell In rng
+        ' 删除方括号之前的内容（即移除模型名称）
+        i = InStr(cell.Value, "[")
+        If i > 0 Then
+            contentBeforeBracket = Left(cell.Value, i - 1)
+            cell.Value = Replace(cell.Value, contentBeforeBracket, "")
+        End If
+        
+        ' 根据关键词设置列宽、格式
+        Select Case True
+            Case InStr(cell.Value, "索引") > 0
+                cell.EntireColumn.ColumnWidth = 3
+            Case InStr(cell.Value, "交易卡号") > 0, InStr(cell.Value, "交易账号") > 0, InStr(cell.Value, "交易对手账卡号") > 0
+                cell.EntireColumn.ColumnWidth = 5
+                ' 将这些列转换为文本格式
+                ws.Columns(cell.Column).NumberFormat = "@"
+            Case InStr(cell.Value, "交易日期") > 0
+                cell.EntireColumn.ColumnWidth = 10
+            Case InStr(cell.Value, "年度") > 0
+                cell.EntireColumn.ColumnWidth = 5
+            Case InStr(cell.Value, "交易时间") > 0
+                cell.EntireColumn.ColumnWidth = 8
+            Case InStr(cell.Value, "交易金额") > 0
+                cell.EntireColumn.Hidden = True
+            Case InStr(cell.Value, "流入") > 0, InStr(cell.Value, "流出") > 0, InStr(cell.Value, "净流") > 0, InStr(cell.Value, "余额") > 0, InStr(cell.Value, "公式余额") > 0
+                cell.EntireColumn.ColumnWidth = 13
+                ws.Columns(cell.Column).NumberFormat = "_(* #,##0.00_);_(* (#,##0.00);_(* ""-""??_);_(@_)"
+            Case InStr(cell.Value, "账户名") > 0
+                cell.EntireColumn.ColumnWidth = 10
+            Case InStr(cell.Value, "对手户名") > 0
+                cell.EntireColumn.ColumnWidth = 10
+            Case InStr(cell.Value, "对手开户银行") > 0
+                cell.EntireColumn.ColumnWidth = 3
+            Case InStr(cell.Value, "摘要说明") > 0
+                cell.EntireColumn.ColumnWidth = 8
+            Case Else
+                ' 隐藏其他没有提到的列
+                cell.EntireColumn.Hidden = True
+        End Select
+    Next cell
+
+    ' 重新冻结窗格
+    Rows("4:4").Select
+    ActiveWindow.FreezePanes = True
+    
+    ' 设置筛选器和行高，仅为包含表头的列设置筛选
+    Dim lastCol As Long
+    lastCol = ws.Cells(3, ws.Columns.Count).End(xlToLeft).Column ' 找到最后一列
+    ws.Range(ws.Cells(3, 1), ws.Cells(3, lastCol)).AutoFilter ' 为包含表头的列应用筛选器
+    ws.Rows(3).RowHeight = 30
+    
+    ' 设置第二行的字体
+    ws.Rows(2).Font.Name = "Arial Narrow"
+    
+    ' 检查第四行是否为空，若为空则删除
+    If WorksheetFunction.CountA(ws.Rows(4)) = 0 Then
+        ws.Rows(4).Delete
+    End If
+    
+    ' 插入 SUBTOTAL 公式
+    Call InsertSubTotal(ws, "流入")
+    Call InsertSubTotal(ws, "流出")
+    Call InsertSubTotal(ws, "净流")
+    Call InsertSubTotal(ws, "余额")
+    Call InsertSubTotal(ws, "公式余额")
+    
+End Sub
+
+' 插入SUBTOTAL公式的子程序
+Sub InsertSubTotal(ws As Worksheet, headerText As String)
+    Dim headerCol As Range
+    Dim lastRow As Long
+    ' 查找指定的表头列
+    Set headerCol = ws.Rows(3).Find(headerText)
+    
+    If Not headerCol Is Nothing Then
+        lastRow = ws.Cells(ws.Rows.Count, headerCol.Column).End(xlUp).Row
+        If lastRow > 3 Then
+            ws.Cells(2, headerCol.Column).Formula = "=SUBTOTAL(9, " & ws.Cells(4, headerCol.Column).Address & ":" & ws.Cells(lastRow, headerCol.Column).Address & ")"
+        End If
+    End If
+End Sub
+
