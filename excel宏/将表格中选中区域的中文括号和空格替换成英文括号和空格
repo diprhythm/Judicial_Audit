@@ -1,0 +1,35 @@
+Sub 将表格中选中区域的中文括号和空格替换成英文括号和空格()
+    Dim cell As Range
+    Dim cellValues As Variant
+    Dim i As Long, j As Long
+
+    ' 禁用屏幕更新和事件
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    ' 将选定区域的值读入数组
+    cellValues = Selection.Value
+
+    ' 遍历数组中的每个元素
+    For i = 1 To UBound(cellValues, 1)
+        For j = 1 To UBound(cellValues, 2)
+            ' 检查是否为文本类型
+            If VarType(cellValues(i, j)) = vbString Then
+                ' 替换中文括号和空格为英文括号和空格
+                cellValues(i, j) = Replace(cellValues(i, j), "（", "(")
+                cellValues(i, j) = Replace(cellValues(i, j), "）", ")")
+                cellValues(i, j) = Replace(cellValues(i, j), "　", " ")
+            End If
+        Next j
+    Next i
+
+    ' 将处理后的数组写回单元格
+    Selection.Value = cellValues
+
+    ' 恢复屏幕更新和事件
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+
+    MsgBox "替换完成!", vbInformation
+End Sub
+
