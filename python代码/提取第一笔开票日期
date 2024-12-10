@@ -1,0 +1,31 @@
+import os
+import pandas as pd
+
+
+def process_excel(input_file, output_file):
+    # 检查输入文件是否存在
+    if not os.path.exists(input_file):
+        raise FileNotFoundError(f"输入文件不存在: {input_file}")
+
+    # 读取 Excel 文件
+    df = pd.read_excel(input_file, sheet_name='整理表')
+
+    # 检查是否包含所需的列
+    if '服务公司名称' not in df.columns or '开具日期' not in df.columns:
+        raise ValueError("表格中缺少 '服务公司名称' 或 '开具日期' 列。")
+
+    # 转换日期列为日期类型
+    df['开具日期'] = pd.to_datetime(df['开具日期'], errors='coerce')
+
+    # 筛选唯一的单位及其最早日期
+    result = df.groupby('服务公司名称', as_index=False)['开具日期'].min()
+
+    # 保存到新的 Excel 文件
+    result.to_excel(output_file, index=False, sheet_name='结果')
+    print(f"处理完成，结果已保存至: {output_file}")
+
+
+# 示例用法
+input_file = r'C:\Users\Administrator\Desktop\testing1\票面信息.xlsx'  # 替换为您的文件路径
+output_file = r'C:\Users\Administrator\Desktop\testing2\结果.xlsx'  # 替换为输出文件路径
+process_excel(input_file, output_file)
