@@ -1,0 +1,70 @@
+import os
+import pandas as pd
+
+def filter_and_save_excel(input_folder, output_folder, company_names):
+    # 确保输出文件夹存在
+    os.makedirs(output_folder, exist_ok=True)
+
+    # 标准化公司名称，处理中文括号和英文括号的差异
+    normalized_company_names = set()
+    for name in company_names:
+        normalized_company_names.add(name.replace('（', '(').replace('）', ')'))
+        normalized_company_names.add(name.replace('(', '（').replace(')', '）'))
+
+    # 初始化输出文件计数器
+    file_counter = 1
+    row_limit = 1000000  # 避免Excel的行数限制报错
+    output_data = []
+
+    # 遍历输入文件夹中的所有Excel文件
+    for file_name in os.listdir(input_folder):
+        file_path = os.path.join(input_folder, file_name)
+        if file_name.endswith('.xlsx') or file_name.endswith('.xls'):
+            try:
+                # 读取Excel文件
+                df = pd.read_excel(file_path)
+
+                # 检查是否存在"需提取数据的表头"列
+                if "需提取数据的表头" in df.columns:
+                    # 对Excel表格中的"纳税人名称"列进行标准化处理 防止中英文括号差异导致匹配失败
+                    df["需提取数据的表头"] = df["需提取数据的表头"].str.replace('（', '(', regex=False).str.replace('）', ')', regex=False)
+                    df["需提取数据的表头"] = df["需提取数据的表头"].str.replace('(', '（', regex=False).str.replace(')', '）', regex=False)
+
+                    # 筛选"需提取数据的表头"匹配公司名称的行
+                    filtered_df = df[df["需提取数据的表头"].isin(normalized_company_names)]
+
+                    # 将筛选后的数据添加到输出缓存
+                    output_data.append(filtered_df)
+
+                    # 如果累计数据超过Excel行数限制，保存到新文件
+                    combined_data = pd.concat(output_data, ignore_index=True)
+                    if len(combined_data) > row_limit:
+                        output_file = os.path.join(output_folder, f"filtered_data_part_{file_counter}.xlsx")
+                        combined_data.to_excel(output_file, index=False)
+                        print(f"已保存 {output_file}")
+
+                        # 重置缓存并增加文件计数器
+                        output_data = []
+                        file_counter += 1
+
+            except Exception as e:
+                print(f"处理文件 {file_name} 时出错: {e}")
+
+    # 保存剩余的数据到新文件
+    if output_data:
+        combined_data = pd.concat(output_data, ignore_index=True)
+        output_file = os.path.join(output_folder, f"filtered_data_part_{file_counter}.xlsx")
+        combined_data.to_excel(output_file, index=False)
+        print(f"已保存 {output_file}")
+
+# 定义输入文件夹、输出文件夹和公司名称
+input_folder = r"文件存放路径"
+output_folder = r"提取文件输出路径"
+company_names = [
+    "需提取的数据的名称1",
+    "需提取的数据的名称2",
+    "需提取的数据的名称3~",
+]
+
+# 调用函数
+filter_and_save_excel(input_folder, output_folder, company_names)
