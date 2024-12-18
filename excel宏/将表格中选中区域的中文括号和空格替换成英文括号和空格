@@ -1,4 +1,4 @@
-Sub 将表格中选中区域的中文括号和空格替换成英文括号和空格()
+Sub 替换中文空格()
     Dim cell As Range
     Dim cellValues As Variant
     Dim i As Long, j As Long
