@@ -1,8 +1,12 @@
-Sub 清除选中区域的制表符()
+Sub 清除制表符()
     Dim cell As Range
     Dim originalText As String
     Dim fullWidthSpace As String
-    
+    Dim dataRange As Range
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim startCell As Range
+
     ' 定义全角空格字符
     fullWidthSpace = ChrW(12288) ' U+3000 对应的全角空格字符
 
@@ -10,24 +14,42 @@ Sub 清除选中区域的制表符()
     Application.ScreenUpdating = False
     Application.EnableEvents = False
 
-    ' 遍历选中区域的每个单元格
-    For Each cell In Selection
-        ' 获取单元格的原始文本
-        originalText = CStr(cell.Value)
-        
-        ' 去除制表符、半角空格和全角空格
-        originalText = Replace(originalText, vbTab, "")
-        originalText = Replace(originalText, " ", "") ' 去除半角空格
-        originalText = Replace(originalText, fullWidthSpace, "") ' 去除全角空格
-        
-        ' 如果文本长度大于15位（科学计数显示的典型长度），将其格式为文本
-        If Len(originalText) > 15 And IsNumeric(cell.Value) Then
-            cell.NumberFormat = "@"
+    ' 确定选择区域的有效数据范围
+    With Selection
+        lastRow = .Worksheet.Cells(.Rows(.Rows.Count).Row, .Column).End(xlUp).Row
+        lastCol = .Worksheet.Cells(.Row, .Columns(.Columns.Count).Column).End(xlToLeft).Column
+        Set dataRange = .Worksheet.Range(.Cells(1, 1), .Worksheet.Cells(lastRow, lastCol))
+    End With
+
+    ' 遍历有效数据单元格
+    For Each cell In dataRange
+        ' 确保单元格不为空
+        If Not IsEmpty(cell.Value) Then
+            ' 获取单元格的原始文本
+            originalText = CStr(cell.Value)
+            
+            ' 去除制表符、半角空格和全角空格
+            originalText = Replace(originalText, vbTab, "") ' 去除制表符
+            originalText = Replace(originalText, " ", "")   ' 去除半角空格
+            originalText = Replace(originalText, fullWidthSpace, "") ' 去除全角空格
+            
+            ' 如果文本长度大于15位（科学计数显示的典型长度），将其格式为文本
+            If Len(originalText) > 15 And IsNumeric(cell.Value) Then
+                cell.NumberFormat = "@"
+            End If
+            
+            ' 将清理后的文本重新赋值
+            cell.Value = originalText
         End If
-        
-        ' 将结果重新赋值
-        cell.Value = originalText
     Next cell
+
+    ' 恢复屏幕更新和事件
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+
+    ' 提示完成消息
+    MsgBox "清除完成，请检查！", vbInformation, "操作完成"
+End Sub
 
     ' 恢复屏幕更新和事件
     Application.ScreenUpdating = True
