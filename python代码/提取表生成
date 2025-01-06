@@ -1,0 +1,146 @@
+import os
+import pandas as pd
+
+def process_excel_files(folder_path, output_path, include_additional_sheets='Y'):
+    """
+    读取文件夹中的三张表(银行交易明细.xlsx、银行账户信息.xlsx、银行人员信息.xlsx)，
+    并根据指定的需求生成新的表头，按“账号 + 币种”输出到不同的工作簿中。
+    """
+
+    # --- 1. 新表的列定义 ---
+    new_columns = [
+        "本账号名称",       # A
+        "本账号",         # B
+        "本卡号",         # C
+        "日期",           # D
+        "收入",           # E
+        "支出",           # F
+        "净流",           # G
+        "余额",           # H
+        "公式余额",       # I
+        "公式校验",       # J
+        "对手户名",       # K
+        "对手开户行",     # L
+        "对手账/卡号",    # M
+        "①用途",         # N
+        "②摘要",         # O
+        "③附言",         # P
+        "④备注",         # Q
+        "⑤其他1",        # R
+        "⑥其他2",        # S
+        "【摘要类】合并",  # T
+        "IP地址",         # U
+        "MAC地址",        # V
+        "交易流水号"       # W
+    ]
+
+    # --- 2. 读取文件 ---
+    files = os.listdir(folder_path)
+    transaction_files = [f for f in files if f.endswith("银行交易明细.xlsx") and not f.startswith('~$')]
+    account_files = [f for f in files if f.endswith("银行账户信息.xlsx") and not f.startswith('~$')]
+
+    # 读取银行账户信息
+    account_info = pd.concat(
+        [pd.read_excel(os.path.join(folder_path, f), dtype=str) for f in account_files],
+        ignore_index=True
+    ) if account_files else pd.DataFrame()
+
+    # 读取交易明细数据
+    all_transaction_data = []
+    for file in transaction_files:
+        df_tran = pd.read_excel(os.path.join(folder_path, file), dtype=str)
+        all_transaction_data.append(df_tran)
+    all_transaction_data_df = pd.concat(all_transaction_data, ignore_index=True) if all_transaction_data else pd.DataFrame()
+
+    if all_transaction_data_df.empty:
+        print("未找到有效的银行交易明细数据，程序结束。")
+        return
+
+    # --- 3. 构造新表 ---
+    new_rows = []
+    for idx, row in all_transaction_data_df.iterrows():
+        # 获取账号、卡号和账户名
+        transaction_account_number = row.get('交易账号', '')
+        transaction_card_number = row.get('交易卡号', '')
+        account_name = ''
+        if not account_info.empty and not account_info[account_info['交易账号'] == transaction_account_number].empty:
+            account_name = account_info[account_info['交易账号'] == transaction_account_number].iloc[0].get('账户开户名称', '')
+
+        # 日期和时间合并
+        trade_date = row.get('交易日期', '')
+        trade_time = row.get('交易时间', '')
+        date_time_str = f"{trade_date} {trade_time}".strip()
+
+        # 收入、支出和净流计算
+        inflow = pd.to_numeric(row.get('交易金额', ''), errors='coerce') if row.get('收付标志') == '进' else 0
+        outflow = pd.to_numeric(row.get('交易金额', ''), errors='coerce') if row.get('收付标志') == '出' else 0
+        net_flow = inflow - outflow
+
+        # 构造一行记录
+        new_row = {
+            "本账号名称": account_name,
+            "本账号": transaction_account_number,
+            "本卡号": transaction_card_number,
+            "日期": date_time_str,
+            "收入": inflow if inflow > 0 else '',
+            "支出": outflow if outflow > 0 else '',
+            "净流": net_flow if net_flow != 0 else '',
+            "余额": pd.to_numeric(row.get('交易余额', ''), errors='coerce'),  # 转为数值
+            "公式余额": pd.to_numeric(row.get('公式余额', ''), errors='coerce'),
+            "公式校验": pd.to_numeric(row.get('公式校验', ''), errors='coerce'),
+            "对手户名": row.get('对手户名', ''),
+            "对手开户行": row.get('对手开户银行', ''),
+            "对手账/卡号": row.get('交易对手账卡号', ''),
+            "①用途": "",
+            "②摘要": row.get('摘要说明', ''),
+            "③附言": "",
+            "④备注": row.get('备注', ''),
+            "⑤其他1": f"现金标志{row.get('现金标志', '')}" if row.get('现金标志') else "",
+            "⑥其他2": "",
+            "【摘要类】合并": "",
+            "IP地址": row.get('IP地址', ''),
+            "MAC地址": row.get('MAC地址', ''),
+            "交易流水号": row.get('交易流水号', ''),
+            "交易币种": row.get('交易币种', '')  # 用于分组和命名，但不在表中显示
+        }
+        new_rows.append(new_row)
+
+    new_df = pd.DataFrame(new_rows)
+
+    # --- 4. 合并摘要类 ---
+    new_df["【摘要类】合并"] = new_df.apply(lambda row: ";".join(
+        str(row[col]) if pd.notna(row[col]) else "" for col in ["①用途", "②摘要", "③附言", "④备注", "⑤其他1", "⑥其他2"]
+    ), axis=1)
+
+    # --- 5. 分组并生成文件 ---
+    grouped = new_df.groupby(["本账号", "交易币种"])
+    for (account_id, currency), group in grouped:
+        account_name = group["本账号名称"].iloc[0]
+        file_name = f"{account_name}{account_id}"
+        if currency:
+            file_name += f"_{currency}"
+        file_name += ".xlsx"
+
+        output_file_path = os.path.join(output_path, file_name)
+        group_to_save = group.drop(columns=["交易币种"])  # 删除交易币种列
+        writer = pd.ExcelWriter(output_file_path, engine='xlsxwriter')
+        group_to_save.to_excel(writer, index=False, sheet_name="提取")
+        workbook = writer.book
+        worksheet = writer.sheets["提取"]
+
+        # 设置数值格式，防止科学计数法
+        format_no_scientific = workbook.add_format({'num_format': '0.00'})
+        numeric_cols = ["收入", "支出", "净流", "余额"]  # 确保这些列为数值
+        for col_name in numeric_cols:
+            col_idx = group_to_save.columns.get_loc(col_name)
+            worksheet.set_column(col_idx, col_idx, 15, format_no_scientific)
+
+        writer.close()
+
+    print("新表生成完毕！")
+
+# 使用示例
+if __name__ == "__main__":
+    folder_path = r"C:\Users\Administrator\Desktop\testing1"
+    output_path = r"C:\Users\Administrator\Desktop\testing1\extract"
+    process_excel_files(folder_path, output_path, include_additional_sheets='N')
