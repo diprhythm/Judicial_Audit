@@ -1,0 +1,92 @@
+Sub 智能分列()
+    Dim selCol    As Range
+    Dim sep       As String
+    Dim colIndex  As Long
+    Dim startRow  As Long, endRow As Long
+    Dim r         As Long
+    Dim fullText  As String
+    Dim pos       As Long
+    Dim firstPart As String, secondPart As String
+    Dim userChoice As String
+
+    ' 1. 选择列
+    On Error Resume Next
+    Set selCol = Application.InputBox("请选择要分列的单列范围：", "选择列", Type:=8)
+    On Error GoTo 0
+    If selCol Is Nothing Then Exit Sub
+    If selCol.Columns.Count <> 1 Then
+        MsgBox "?? 请仅选择一列！", vbExclamation
+        Exit Sub
+    End If
+
+    ' 2. 输入分隔符
+    sep = InputBox("请输入用于分列的字符（汉字/英文字母/数字/符号）：", "分隔符")
+    If sep = "" Then
+        MsgBox "?? 未输入分隔符，已取消操作。", vbExclamation
+        Exit Sub
+    End If
+
+    ' 3. 用户选择插入方式
+    userChoice = InputBox( _
+        "请选择分隔符插入方式：" & vbCrLf & _
+        "1 = 分隔符放在左侧值后面" & vbCrLf & _
+        "2 = 分隔符放在右侧值前面" & vbCrLf & _
+        "3 = 分隔符单独占一列（中间插入）", _
+        "分隔符位置选择", "1")
+
+    If userChoice <> "1" And userChoice <> "2" And userChoice <> "3" Then
+        MsgBox "?? 输入无效，操作已取消。", vbExclamation
+        Exit Sub
+    End If
+
+    colIndex = selCol.Column
+    startRow = selCol.Row
+    endRow = selCol.Row + selCol.Rows.Count - 1
+
+    ' 4. 插入两列或三列
+    If userChoice = "3" Then
+        Range(Columns(colIndex + 1), Columns(colIndex + 3)).Insert Shift:=xlToRight
+    Else
+        Range(Columns(colIndex + 1), Columns(colIndex + 2)).Insert Shift:=xlToRight
+    End If
+
+    ' 5. 分列处理
+    For r = startRow To endRow
+        fullText = Cells(r, colIndex).Value
+        pos = InStr(fullText, sep)
+
+        If pos > 0 Then
+            Select Case userChoice
+                Case "1"  ' 分隔符放左侧尾部
+                    firstPart = Left(fullText, pos + Len(sep) - 1)
+                    secondPart = Mid(fullText, pos + Len(sep))
+                    Cells(r, colIndex + 1).Value = firstPart
+                    Cells(r, colIndex + 2).Value = secondPart
+
+                Case "2"  ' 分隔符放右侧前部
+                    firstPart = Left(fullText, pos - 1)
+                    secondPart = sep & Mid(fullText, pos + Len(sep))
+                    Cells(r, colIndex + 1).Value = firstPart
+                    Cells(r, colIndex + 2).Value = secondPart
+
+                Case "3"  ' 分隔符占中间一列
+                    firstPart = Left(fullText, pos - 1)
+                    secondPart = Mid(fullText, pos + Len(sep))
+                    Cells(r, colIndex + 1).Value = firstPart
+                    Cells(r, colIndex + 2).Value = sep
+                    Cells(r, colIndex + 3).Value = secondPart
+            End Select
+        Else
+            ' 如果没有找到分隔符
+            Cells(r, colIndex + 1).Value = fullText
+            If userChoice = "3" Then
+                Cells(r, colIndex + 2).Value = ""
+                Cells(r, colIndex + 3).Value = ""
+            Else
+                Cells(r, colIndex + 2).Value = ""
+            End If
+        End If
+    Next r
+
+    MsgBox "? 操作完成！", vbInformation
+End Sub
