@@ -1,0 +1,394 @@
+# coding: utf-8
+"""Generate registration info from bank statement files.
+
+This script reads a statistics workbook and a folder with bank statement files
+and generates "登记信息.xlsx" under the folder. It also creates three folders to
+store processed files:
+    1已登记      - processed successfully
+    2被跳过      - skipped due to problems
+    3重复账号    - already registered
+
+The script expects the bank statement files to contain specific sheets and
+fields as described in the user requirements.
+"""
+
+import os
+import shutil
+from datetime import datetime
+import warnings
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+
+# Suppress openpyxl warning about missing default styles
+warnings.filterwarnings(
+    "ignore",
+    message="Workbook contains no default style",
+    category=UserWarning,
+)
+
+import pandas as pd
+from openpyxl import load_workbook, Workbook
+
+
+
+HEADER_ROW = 5  # row index (1-based) where headers are located in statistics sheet
+STATISTICS_SHEET = '统计表'
+
+
+def setup_logger(folder):
+    """Setup logging to run_log.txt under the given folder."""
+    log_path = os.path.join(folder, 'run_log.txt')
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s %(levelname)s: %(message)s',
+        handlers=[logging.FileHandler(log_path, encoding='utf-8')]
+    )
+    return logging.getLogger(__name__)
+
+
+def normalize_number(val):
+    """Return string representation of a cell value without trailing '.0'."""
+    if val is None:
+        return None
+    s = str(val).strip()
+    return s[:-2] if s.endswith('.0') else s
+
+
+def format_date(val):
+    """Format a date-like value as YYYY.MM.DD if possible."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    if isinstance(val, (datetime, pd.Timestamp)):
+        return val.strftime('%Y.%m.%d')
+    dt = pd.to_datetime(str(val), errors='coerce')
+    if pd.notna(dt):
+        return dt.strftime('%Y.%m.%d')
+    s = str(val)
+    if len(s) == 8 and s.isdigit():
+        return f"{s[:4]}.{s[4:6]}.{s[6:]}"
+    return s
+
+
+def read_statistics_info(path):
+    """Read existing serial numbers and account information from the statistics workbook."""
+    wb = load_workbook(path, data_only=True)
+    sheet = wb[STATISTICS_SHEET] if STATISTICS_SHEET in wb.sheetnames else wb.active
+    headers = [str(cell.value).strip() if cell.value else '' for cell in sheet[HEADER_ROW]]
+    header_map = {}
+    for idx, h in enumerate(headers, start=1):
+        header_map[h] = idx
+        header_map[h.replace('\n', '')] = idx
+
+    def col(name):
+        return header_map.get(name)
+
+    used_serials = set()
+    account_serial = {}
+    card_serial = {}
+    for row in sheet.iter_rows(min_row=HEADER_ROW + 1):
+        serial_cell = row[col('已取序号手动添加') - 1] if col('已取序号手动添加') else None
+        serial_value = serial_cell.value if serial_cell else None
+        serial = None
+        if serial_value is not None:
+            try:
+                serial = int(str(serial_value).split('.')[0])
+                used_serials.add(serial)
+            except ValueError:
+                pass
+        acc_val = row[col('账号') - 1].value if col('账号') else None
+        card_val = row[col('卡号') - 1].value if col('卡号') else None
+        acc_str = normalize_number(acc_val)
+        card_str = normalize_number(card_val)
+        if serial is not None:
+            if acc_str:
+                account_serial.setdefault(acc_str, serial)
+            if card_str:
+                card_serial.setdefault(card_str, serial)
+    return used_serials, account_serial, card_serial
+
+
+def next_serial(used, lock):
+    """Return next available serial number and mark it as used."""
+    with lock:
+        i = 1
+        while i in used:
+            i += 1
+        used.add(i)
+    return i
+
+
+def find_existing_serial(account, cards, account_map, card_map, lock):
+    """Return existing serial if account or cards already registered."""
+    with lock:
+        if account:
+            serial = account_map.get(account)
+            if serial is None:
+                serial = card_map.get(account)
+            if serial is not None:
+                return serial
+        for c in cards:
+            serial = card_map.get(c)
+            if serial is None:
+                serial = account_map.get(c)
+            if serial is not None:
+                return serial
+    return None
+
+
+def create_output_book(path):
+    """Create a workbook for 登记信息.xlsx with headers if it doesn't exist."""
+    if os.path.exists(path):
+        return load_workbook(path)
+    wb = Workbook()
+    ws = wb.active
+    ws.append([
+        '文件名', '已取序号', '是否整理', '币种', '账户名', '开户行',
+        '账号', '卡号', '是否取得', '取得时间', '*详细说明',
+        '*是否需重取', '⑤编制人', '已取得交易期间'
+    ])
+    return wb
+
+
+def rename_and_move(src, dest_dir, serial, acquire_time):
+    """Rename file according to rule and move to destination directory."""
+    os.makedirs(dest_dir, exist_ok=True)
+    serial_str = serial if isinstance(serial, str) else f"{int(serial):04d}"
+    base, ext = os.path.splitext(os.path.basename(src))
+    name = f"{serial_str}、{base}({acquire_time}){ext}"
+    name = name.replace('/', '_').replace('\\', '_')
+    new_path = os.path.join(dest_dir, name)
+    shutil.move(src, new_path)
+    logging.info("Moved %s -> %s", src, new_path)
+    return os.path.basename(new_path)
+
+
+def read_unique_values(df, column):
+    if column not in df.columns:
+        return []
+    values = df[column].dropna().astype(str)
+    # remove trailing .0 that may appear from numeric cells
+    values = values.map(lambda x: x.rstrip('.0') if x.endswith('.0') else x)
+    return [v.strip() for v in values.unique()]
+
+
+def process_file(file_path, stats_accounts, stats_cards, used_serials,
+                 acquire_time, author, lock, folders):
+    """Extract registration information from a single statement file."""
+    registered, skipped, duplicated = folders
+    basename = os.path.basename(file_path)
+    logging.info("Processing %s", basename)
+    try:
+        tiqu = pd.read_excel(file_path, sheet_name='提取', dtype=str)
+    except Exception:
+        logging.exception("Failed to read 提取 from %s", basename)
+        shutil.move(file_path, os.path.join(skipped, basename))
+        return {'文件名': basename, '*详细说明': '无法读取提取表'}
+    try:
+        zhengli = pd.read_excel(file_path, sheet_name='整理表', dtype=str)
+    except Exception:
+        logging.warning("整理表读取失败: %s", basename)
+        zhengli = pd.DataFrame()
+    try:
+        account_info = pd.read_excel(file_path, sheet_name='账户信息1', dtype=str)
+    except Exception:
+        logging.warning("账户信息1读取失败: %s", basename)
+        account_info = pd.DataFrame()
+
+    # 文件名
+    record = {'文件名': os.path.basename(file_path)}
+
+    # 账户名
+    names = read_unique_values(tiqu, '本账号名称')
+    if not names:
+        record.update({'账户名': '无账户名'})
+        shutil.move(file_path, os.path.join(skipped, basename))
+        logging.warning("%s skipped: no account name", basename)
+        return record
+    record['账户名'] = ';'.join(names)
+
+    # 账号
+    accounts = read_unique_values(tiqu, '本账号')
+    if len(accounts) == 1:
+        account = accounts[0]
+        record['账号'] = account
+    else:
+        record['账号'] = '非唯一账号 请检查'
+        account = None
+
+    # 卡号
+    cards = read_unique_values(tiqu, '本卡号')
+    record['卡号'] = '、'.join(cards)
+
+    # 币种
+    currency = read_unique_values(zhengli, '交易币种')
+    record['币种'] = ';'.join(currency)
+
+    # 开户行
+    bank = '未匹配成功'
+    row = pd.DataFrame()
+    if account and not account_info.empty:
+        acc_series = account_info.get('交易账号', pd.Series(dtype=str)).astype(str).str.rstrip('.0')
+        card_series = account_info.get('交易卡号', pd.Series(dtype=str)).astype(str).str.rstrip('.0')
+        row = account_info[(acc_series == account) | (card_series == account)]
+        if not row.empty:
+            open_bank = row.iloc[0].get('账号开户银行')
+            branch = row.iloc[0].get('开户网点')
+            parts = []
+            if pd.notna(open_bank):
+                parts.append(str(open_bank))
+            if pd.notna(branch):
+                parts.append(str(branch))
+            bank = ''.join(parts).strip() or '无数据'
+    record['开户行'] = bank
+
+    # *详细说明 - 开户/销户信息及余额差异
+    detail_parts = []
+    if account and not account_info.empty and not row.empty:
+        open_time = format_date(row.iloc[0].get('账号开户时间'))
+        close_time = format_date(row.iloc[0].get('销户日期'))
+        detail_parts.append(f"开户时间{open_time}" if open_time else "开户时间匹配失败")
+        if close_time:
+            detail_parts.append(f"销户时间{close_time}")
+    else:
+        detail_parts.append("开户时间匹配失败")
+
+    diff_desc = None
+    if '公式校验' in tiqu.columns and '日期' in tiqu.columns:
+        check_series = pd.to_numeric(tiqu['公式校验'], errors='coerce').fillna(0)
+        nonzero = check_series != 0
+        if nonzero.any():
+            first_idx = check_series[nonzero].index[0]
+            last_idx = check_series[nonzero].index[-1]
+            first_dt = pd.to_datetime(tiqu.loc[first_idx, '日期'], errors='coerce')
+            last_dt = pd.to_datetime(tiqu.loc[last_idx, '日期'], errors='coerce')
+            if pd.notna(first_dt) and pd.notna(last_dt):
+                first_date = first_dt.strftime('%Y年%m月')
+                last_date = last_dt.strftime('%Y年%m月')
+                max_idx = check_series.abs().idxmax()
+                max_val = check_series.loc[max_idx]
+                max_val_str = str(int(max_val)) if float(max_val).is_integer() else str(max_val)
+                diff_desc = f"{first_date}至{last_date}存在余额差异 余额差异最大为{max_val_str}"
+    if diff_desc:
+        detail_parts.append(diff_desc)
+    detail = f"{acquire_time}取得：" + '；'.join(detail_parts)
+    record['*详细说明'] = detail
+
+    # 日期区间
+    if '日期' in tiqu.columns and not tiqu['日期'].dropna().empty:
+        dates = pd.to_datetime(tiqu['日期'].dropna(), errors='coerce').dropna()
+        if not dates.empty:
+            start = dates.min().strftime('%Y.%m.%d')
+            end = dates.max().strftime('%Y.%m.%d')
+            record['已取得交易期间'] = f'{start}-{end}'
+        else:
+            record['已取得交易期间'] = ''
+    else:
+        record['已取得交易期间'] = ''
+
+    # 是否整理, 是否取得, 取得时间, *是否需重取, 编制人
+    record['是否整理'] = '是'
+    record['是否取得'] = '是'
+    record['取得时间'] = acquire_time
+    record['*是否需重取'] = '否'
+    record['⑤编制人'] = author
+
+    # 判断是否重复账号
+    existing_serial = find_existing_serial(account, cards, stats_accounts, stats_cards, lock)
+    if existing_serial is not None:
+        record['已取序号'] = f'已取序号{existing_serial}'
+        final_name = rename_and_move(file_path, duplicated, existing_serial, acquire_time)
+        record['文件名'] = final_name
+        logging.info("%s marked duplicate with serial %s", basename, existing_serial)
+        return record
+
+    # 分配序号
+    serial = next_serial(used_serials, lock)
+    record['已取序号'] = serial
+    with lock:
+        if account:
+            stats_accounts[account] = serial
+        for c in cards:
+            stats_cards[c] = serial
+    final_name = rename_and_move(file_path, registered, serial, acquire_time)
+    record['文件名'] = final_name
+    logging.info("%s registered with serial %s", basename, serial)
+    return record
+
+
+def clean_input_path(path):
+    """Remove invisible unicode characters from input paths."""
+    bad_chars = '\ufeff\u202a\u202b\u202c\u200e\u200f'
+    return path.strip().translate({ord(c): None for c in bad_chars})
+
+
+def main():
+    stats_path = clean_input_path(input('请输入统计表路径: '))
+    folder = input('请输入拆分后流水的存放路径: ').strip()
+    acquire_time = input('请输入取得时间: ').strip()
+    author = input('请输入编制人: ').strip()
+
+    logger = setup_logger(folder)
+    logger.info("Start processing")
+
+    registered = os.path.join(folder, '1已登记')
+    skipped = os.path.join(folder, '2被跳过')
+    duplicated = os.path.join(folder, '3重复账号')
+    for p in (registered, skipped, duplicated):
+        os.makedirs(p, exist_ok=True)
+
+    used_serials, stats_accounts, stats_cards = read_statistics_info(stats_path)
+
+    output_path = os.path.join(folder, '登记信息.xlsx')
+    wb = create_output_book(output_path)
+    ws = wb.active
+
+    files = [f for f in os.listdir(folder) if f.lower().endswith(('.xls', '.xlsx', '.xlsm'))]
+    thread_count = min(12, max(8, len(files) // 5 + 1))
+    results = []
+    lock = threading.Lock()
+    try:
+        with ThreadPoolExecutor(max_workers=thread_count) as executor:
+            futures = [
+                executor.submit(
+                    process_file,
+                    os.path.join(folder, f),
+                    stats_accounts,
+                    stats_cards,
+                    used_serials,
+                    acquire_time,
+                    author,
+                    lock,
+                    (registered, skipped, duplicated),
+                )
+                for f in files
+            ]
+            for fut in as_completed(futures):
+                rec = fut.result()
+                if rec:
+                    results.append(rec)
+    finally:
+        for rec in results:
+            ws.append([
+                rec.get('文件名', ''),
+                rec.get('已取序号', ''),
+                rec.get('是否整理', ''),
+                rec.get('币种', ''),
+                rec.get('账户名', ''),
+                rec.get('开户行', ''),
+                rec.get('账号', ''),
+                rec.get('卡号', ''),
+                rec.get('是否取得', ''),
+                rec.get('取得时间', ''),
+                rec.get('*详细说明', ''),
+                rec.get('*是否需重取', ''),
+                rec.get('⑤编制人', ''),
+                rec.get('已取得交易期间', ''),
+            ])
+        wb.save(output_path)
+        logger.info("登记信息已生成: %s", output_path)
+        print(f'登记信息已生成: {output_path}')
+
+
+if __name__ == '__main__':
+    main()
