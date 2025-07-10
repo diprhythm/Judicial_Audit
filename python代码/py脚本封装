@@ -1,0 +1,64 @@
+import os
+import subprocess
+import sys
+import shutil
+
+
+def install_pyinstaller():
+    try:
+        import PyInstaller
+    except ImportError:
+        print("未检测到 PyInstaller，正在自动安装...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
+
+
+def build_exe(py_file_path):
+    py_file_path = os.path.abspath(py_file_path)
+
+    if not os.path.isfile(py_file_path):
+        print("❌ 错误：找不到指定的 .py 文件。请检查路径是否正确。")
+        return
+
+    os.chdir(os.path.dirname(py_file_path))
+    file_name = os.path.basename(py_file_path)
+    exe_name = os.path.splitext(file_name)[0]
+
+    print(f"🚀 正在封装：{file_name} -> {exe_name}.exe")
+
+    cmd = [
+        "pyinstaller",
+        "--onefile",
+        "--clean",
+        file_name
+    ]
+    subprocess.call(cmd)
+
+    dist_path = os.path.join("dist", f"{exe_name}.exe")
+    final_exe_path = os.path.join(os.getcwd(), f"{exe_name}.exe")
+
+    if os.path.exists(dist_path):
+        shutil.move(dist_path, final_exe_path)
+        print(f"✅ 打包成功！可执行文件位置：{final_exe_path}")
+    else:
+        print("❌ 打包失败，请检查 PyInstaller 的日志。")
+
+    # 清理临时文件
+    for folder in ["build", "dist", "__pycache__"]:
+        if os.path.exists(folder):
+            shutil.rmtree(folder)
+    spec_file = f"{exe_name}.spec"
+    if os.path.exists(spec_file):
+        os.remove(spec_file)
+
+
+if __name__ == "__main__":
+    install_pyinstaller()
+
+    print("请输入你要打包的 .py 文件完整路径，例如：")
+    print(r"C:\Users\Administrator\Desktop\testing1\xxx.py")
+    file_path = input(">>> ").strip('"')
+
+    if not file_path.endswith(".py"):
+        print("❌ 你输入的不是 .py 文件路径，请重试！")
+    else:
+        build_exe(file_path)
