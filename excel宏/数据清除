@@ -1,0 +1,46 @@
+Sub 数据清除()
+    Dim rng As Range, dataRange As Range, cell As Range, ws As Worksheet
+    Dim choice As Long, regEx As Object
+    Dim usedRng As Range
+
+    On Error Resume Next
+    Set rng = Application.InputBox("请选择要清除的区域", "清除字符", Type:=8)
+    On Error GoTo 0
+    If rng Is Nothing Then Exit Sub
+
+    choice = Application.InputBox("请选择要清除的内容编号：" & vbCrLf & _
+         "1 - 清除数字" & vbCrLf & _
+         "2 - 清除字母" & vbCrLf & _
+         "3 - 清除中文" & vbCrLf & _
+         "4 - 清除符号（包括空格和制表符）", "清除选项", Type:=1)
+    If choice < 1 Or choice > 4 Then Exit Sub
+
+    Set ws = rng.Worksheet
+    Set usedRng = ws.UsedRange
+
+    If rng.Rows.Count = ws.Rows.Count Or rng.Columns.Count = ws.Columns.Count Then
+        Set dataRange = Intersect(rng, usedRng)
+    Else
+        Set dataRange = rng
+    End If
+    If dataRange Is Nothing Then Exit Sub
+
+    Set regEx = CreateObject("VBScript.RegExp")
+    regEx.Global = True
+    Select Case choice
+        Case 1: regEx.Pattern = "[0-9]"
+        Case 2: regEx.Pattern = "[A-Za-z]"
+        Case 3: regEx.Pattern = "[一-龥]"
+        Case 4: regEx.Pattern = "[^0-9A-Za-z一-龥]"
+    End Select
+
+    Application.ScreenUpdating = False
+    For Each cell In dataRange.Cells
+        If Len(cell.Value) <> 0 Then
+            cell.Value = regEx.Replace(CStr(cell.Value), "")
+        End If
+    Next cell
+    Application.ScreenUpdating = True
+
+    MsgBox "清除完成！", vbInformation
+End Sub
