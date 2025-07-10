@@ -1,0 +1,247 @@
+import os
+import sys
+from pathlib import Path
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from collections import defaultdict
+
+ROW_LIMIT = 1_000_000  # 每个工作表允许的最大行数
+
+try:
+    from openpyxl import Workbook
+except ImportError:  # pragma: no cover - environment may not have openpyxl
+    print("需要安装 openpyxl 模块，运行 pip install openpyxl")
+    sys.exit(1)
+
+try:
+    import filetype
+except Exception:  # pragma: no cover - filetype is optional
+    filetype = None
+
+# 文件类型分类映射
+CATEGORY_MAP = {
+    "办公文档": {
+        ".doc", ".docx", ".xls", ".xlsx", ".xlsm", ".csv",
+        ".ppt", ".pptx", ".pdf", ".odt", ".ods", ".odp", ".rtf", ".txt",
+    },
+    "图片": {
+        ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff",
+        ".webp", ".svg", ".heic", ".ico", ".raw",
+    },
+    "音频": {
+        ".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg", ".wma", ".aiff",
+    },
+    "视频": {
+        ".mp4", ".mkv", ".mov", ".avi", ".wmv", ".flv", ".mpeg", ".3gp", ".webm",
+    },
+    "压缩包": {
+        ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".iso",
+    },
+    "财务账套": {
+        ".udb", ".vdb", ".vdd", ".ais", ".tplus", ".bdf", ".pbd",
+        ".ini", ".bak", ".bkp", ".aiy", ".air", ".ldb", ".gac"
+    },
+    "数据库": {
+        ".db", ".db3", ".mdb", ".accdb", ".sqlite", ".sqlite3",
+        ".sql", ".dbf", ".dbx", ".dbs", ".mdf", ".ndf", ".ldf",
+        ".frm", ".ibd", ".myd", ".myi", ".par", ".dmp", ".ora",
+        ".dat", ".fdb", ".gdb", ".sdf", ".kdb", ".ais", ".tplus",
+    },
+    "可执行文件": {
+        ".exe", ".msi", ".bat", ".sh", ".app", ".apk", ".com",
+    },
+    "代码文件": {
+        ".py", ".js", ".html", ".css", ".cpp", ".c", ".java", ".cs",
+        ".php", ".rb", ".ts", ".json", ".xml", ".yml",
+    },
+}
+OTHER_CATEGORY = "其他"
+
+# 扫描日志
+LOG_ENTRIES = []
+
+
+def add_log(action: str, path: str, note: str = "") -> None:
+    """记录日志并同时在控制台打印。"""
+    timestamp = datetime.now()
+    entry = [timestamp, action, path, note]
+    LOG_ENTRIES.append(entry)
+    time_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+    output = f"[{time_str}] {action}: {path}"
+    if note:
+        output += f" ({note})"
+    print(output)
+
+
+def categorize(ext: str) -> str:
+    ext = ext.lower()
+    for category, extensions in CATEGORY_MAP.items():
+        if ext in extensions:
+            return category
+    return OTHER_CATEGORY
+
+
+def detect_file_type(path: str) -> str:
+    if not filetype:
+        return "unknown"
+    try:
+        kind = filetype.guess(path)
+        if kind is None:
+            return "unknown"
+        return f"{kind.mime} ({kind.extension})"
+    except Exception:
+        return "error"
+
+
+def scan_file(file_path: Path) -> dict | None:
+    try:
+        stat = file_path.stat()
+        info = {
+            "path": str(file_path),
+            "folder": str(file_path.parent),
+            "name": file_path.name,
+            "ext": file_path.suffix,
+            "created": datetime.fromtimestamp(stat.st_ctime),
+            "modified": datetime.fromtimestamp(stat.st_mtime),
+            "size_mb": round(stat.st_size / (1024 * 1024), 2),
+            "category": categorize(file_path.suffix),
+            "detected": detect_file_type(str(file_path)),
+        }
+        add_log("扫描完成", str(file_path), info["category"])
+        return info
+    except Exception as exc:  # pragma: no cover - ignore inaccessible files
+        add_log("扫描失败", str(file_path), str(exc))
+        return None
+
+
+def scan_directory(root: Path, workers: int) -> list:
+    results = []
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = []
+        for dirpath, _, files in os.walk(root):
+            for fname in files:
+                fpath = Path(dirpath) / fname
+                futures.append(executor.submit(scan_file, fpath))
+        for f in futures:
+            res = f.result()
+            if res:
+                results.append(res)
+    return results
+
+
+def export_to_excel(records: list, out_dir: Path) -> None:
+    """根据记录将结果输出到一个或多个 Excel 工作簿"""
+
+    categorized = defaultdict(list)
+    for item in records:
+        categorized[item["category"]].append(item)
+
+    base_name = "扫描结果"
+    workbook_index = 1
+
+    def new_workbook() -> tuple[Workbook, any]:
+        wb = Workbook()
+        wb.remove(wb.active)
+        summary_ws = wb.create_sheet("汇总")
+        summary_ws.append(["分类", "文件数", "总大小(MB)"])
+        log_ws = wb.create_sheet("运行日志")
+        log_ws.append(["时间", "操作", "文件路径", "备注"])
+        for entry in LOG_ENTRIES:
+            log_ws.append(entry)
+        return wb, summary_ws
+
+    wb, summary_ws = new_workbook()
+    total_files = 0
+    total_size = 0.0
+
+    def save_workbook():
+        nonlocal workbook_index, wb, summary_ws, total_files, total_size
+        summary_ws.append([])
+        summary_ws.append(["总计", total_files, round(total_size, 2)])
+        suffix = "" if workbook_index == 1 else f"part{workbook_index}"
+        filename = f"{base_name}{suffix}.xlsx"
+        wb.save(out_dir / filename)
+        add_log("保存工作簿", str(out_dir / filename))
+        workbook_index += 1
+        wb, summary_ws = new_workbook()
+        total_files = 0
+        total_size = 0.0
+
+    for category, rows in categorized.items():
+        start = 0
+        while start < len(rows):
+            chunk = rows[start : start + ROW_LIMIT - 1]
+            ws = wb.create_sheet(title=category[:31])
+            ws.append([
+                "文件夹路径",
+                "文件名",
+                "扩展名",
+                "创建日期",
+                "修改日期",
+                "文件大小(MB)",
+                "检测类型",
+                "文件链接",
+            ])
+            for r in chunk:
+                ws.append([
+                    r["folder"],
+                    r["name"],
+                    r["ext"],
+                    r["created"],
+                    r["modified"],
+                    r["size_mb"],
+                    r["detected"],
+                    r["path"],
+                ])
+                ws.cell(row=ws.max_row, column=1).hyperlink = f"file:///{r['folder'].replace(' ', '%20')}"
+                ws.cell(row=ws.max_row, column=8).hyperlink = f"file:///{r['path'].replace(' ', '%20')}"
+            count = len(chunk)
+            size_sum = round(sum(x["size_mb"] for x in chunk), 2)
+            summary_ws.append([category, count, size_sum])
+            total_files += count
+            total_size += size_sum
+            start += count
+            if start < len(rows):
+                save_workbook()
+
+    # 保存最后一个工作簿
+    save_workbook()
+
+
+def get_desktop_path() -> Path:
+    if os.name == "nt":
+        home = os.environ.get("USERPROFILE")
+    else:
+        home = os.environ.get("HOME")
+    desktop = Path(home or Path.home()) / "Desktop"
+    return desktop if desktop.exists() else Path(home or Path.home())
+
+
+def main() -> None:
+    target = input("请输入要扫描的路径: ").strip()
+    if not target:
+        print("未提供路径，退出。")
+        return
+    root_path = Path(target)
+    if not root_path.exists():
+        print("路径不存在，退出。")
+        return
+
+    workers = min(32, os.cpu_count() or 1)
+    add_log("开始扫描", str(root_path), f"线程数: {workers}")
+    print(f"开始扫描 '{root_path}'，使用 {workers} 个线程...")
+
+    data = scan_directory(root_path, workers)
+
+    add_log("扫描结束", str(root_path), f"共发现文件: {len(data)}")
+    if not data:
+        print("未找到任何文件。")
+        return
+
+    desktop = get_desktop_path()
+    export_to_excel(data, desktop)
+    print(f"扫描完成，结果已保存至 {desktop}")
+
+
+if __name__ == "__main__":
+    main()
