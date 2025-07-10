@@ -1,0 +1,230 @@
+import os
+import glob
+import math
+import warnings
+import shutil
+from typing import Dict, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.styles import numbers
+
+# ----------------------------------------
+# 1. 全局配置
+# ----------------------------------------
+warnings.filterwarnings(
+    "ignore",
+    message="Workbook contains no default style",
+    module="openpyxl.styles.stylesheet"
+)
+
+# 上限从 800,000 行改为 1,000,000 行
+CUSTOM_LIMIT = 1_000_000
+
+SHEET_NAME = "提取"
+NUMERIC_COLUMNS = {"收入", "支出", "净流", "余额", "公式余额", "公式校验"}
+DATE_COLUMNS = {"日期"}
+TEXT_COLUMNS = {"本账号", "本卡号", "对手账/卡号"}
+ERROR_MARKERS = {"#NAME?", "#VALUE!", "#REF!", "#DIV/0!", "#NULL!", "#N/A"}
+
+# ----------------------------------------
+# 2. 辅助函数区
+# ----------------------------------------
+
+def has_error_cell(file_path: str) -> bool:
+    try:
+        wb = load_workbook(file_path, read_only=True, data_only=True)
+        if SHEET_NAME not in wb.sheetnames:
+            return False
+        ws = wb[SHEET_NAME]
+        for row in ws.iter_rows(values_only=False):
+            for cell in row:
+                if cell.data_type == 'e' or cell.value in ERROR_MARKERS:
+                    return True
+    except Exception:
+        return True
+    return False
+
+
+def read_and_preprocess(file_path: str) -> pd.DataFrame:
+    fname = os.path.splitext(os.path.basename(file_path))[0]
+    dtype_spec = {col: str for col in TEXT_COLUMNS}
+    df = pd.read_excel(
+        file_path,
+        sheet_name=SHEET_NAME,
+        engine="openpyxl",
+        dtype=dtype_spec
+    )
+    df.columns = df.columns.str.strip()
+    # 插入“索引号”
+    df.insert(0, "索引号", fname)
+    # 插入“对手户名（透视专用）”
+    if "交易流水号" in df.columns and "对手户名" in df.columns:
+        pos = df.columns.get_loc("交易流水号")
+        df.insert(pos + 1, "对手户名（透视专用）", df["对手户名"].fillna("").astype(str))
+    # 检查必需列
+    missing = [col for col in TEXT_COLUMNS if col not in df.columns]
+    if missing:
+        raise KeyError(f"文件 {file_path} 缺少必要列：{', '.join(missing)}")
+    # 文本列填充
+    for txt_col in TEXT_COLUMNS:
+        df[txt_col] = df[txt_col].fillna("").astype(str)
+    # 类型转换
+    for col in df.columns:
+        if col in TEXT_COLUMNS or col in {"索引号", "对手户名（透视专用）"}:
+            continue
+        if col in NUMERIC_COLUMNS:
+            df[col] = pd.to_numeric(df[col], errors="coerce").round(2)
+        elif col in DATE_COLUMNS:
+            df[col] = pd.to_datetime(df[col], errors="coerce")
+        else:
+            df[col] = df[col].fillna("").astype(str)
+    return df
+
+
+def group_by_index(dataframes: List[pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+    """
+    按“索引号”分组合并，同一索引号保证在同一汇总表。
+    """
+    index_map: Dict[str, pd.DataFrame] = {}
+    for df in dataframes:
+        idx = df["索引号"].iloc[0]
+        if idx in index_map:
+            index_map[idx] = pd.concat([index_map[idx], df], ignore_index=True)
+        else:
+            index_map[idx] = df.copy()
+    return index_map
+
+
+def write_df_to_excel(df: pd.DataFrame, output_path: str, text_cols: List[str] = None) -> None:
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    df.to_excel(output_path, index=False, engine="openpyxl", na_rep="")
+    if not text_cols:
+        return
+    wb = load_workbook(output_path)
+    ws = wb.active
+    header = next(ws.iter_rows(min_row=1, max_row=1, values_only=False))
+    col_map = {cell.value: cell.column_letter for cell in header}
+    for col in text_cols:
+        letter = col_map.get(col)
+        if not letter:
+            continue
+        for r in range(2, ws.max_row + 1):
+            c = ws[f"{letter}{r}"]
+            c.value = str(c.value) if c.value is not None else ""
+            c.number_format = numbers.FORMAT_TEXT
+    wb.save(output_path)
+
+
+def process_file(file_path: str) -> Dict:
+    prefix = f"检查文件：{file_path}"
+    if has_error_cell(file_path):
+        return {"error": file_path, "msg": f"{prefix}，发现错误单元，跳过合并"}
+    try:
+        df = read_and_preprocess(file_path)
+        return {"df": df, "msg": f"{prefix}，正常，已添加 {len(df)} 行数据"}
+    except Exception as e:
+        return {"error": file_path, "msg": f"{prefix}，跳过（读取/预处理失败）：{e}"}
+
+
+def main():
+    input_folder = input("请输入整理后流水的存放文件夹路径：").strip()
+    if not os.path.isdir(input_folder):
+        print("输入的路径不存在或不是文件夹，请检查路径。")
+        return
+
+    # 选择输出格式
+    while True:
+        fmt = input("请选择输出文件格式：1-输出为 xlsx；2-输出为 csv：").strip()
+        if fmt in ("1", "2"):
+            to_csv = (fmt == "2")
+            break
+        print("输入不合法，请输入 1 或 2。")
+
+    # 递归匹配子文件夹中的所有 .xlsx 文件
+    files = glob.glob(os.path.join(input_folder, "**", "*.xlsx"), recursive=True)
+    all_dfs: List[pd.DataFrame] = []
+    error_files: List[str] = []
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(process_file, fp): fp for fp in files}
+        for fut in as_completed(futures):
+            res = fut.result()
+            print(res.get("msg", ""))
+            if "df" in res:
+                all_dfs.append(res["df"])
+            elif "error" in res:
+                error_files.append(res["error"])
+
+    if error_files:
+        clean_dir = os.path.join(input_folder, "待清洗数据")
+        os.makedirs(clean_dir, exist_ok=True)
+        for fp in error_files:
+            dest = os.path.join(clean_dir, os.path.basename(fp))
+            shutil.copy2(fp, dest)
+            print(f"复制文件：{fp} -> {dest}")
+
+    if not all_dfs:
+        print("没有任何有效数据，程序结束。")
+        return
+
+    # 按索引号分组并合并
+    indexed = group_by_index(all_dfs)
+    regular, large = {}, {}
+    for idx_key in sorted(indexed.keys()):
+        df = indexed[idx_key]
+        if len(df) > CUSTOM_LIMIT:
+            large[idx_key] = df
+        else:
+            regular[idx_key] = df
+
+    # 合并并输出
+    idx = 1
+    temp: List[pd.DataFrame] = []
+    rows = 0
+    for idx_key, df in regular.items():
+        count = len(df)
+        if rows and rows + count > CUSTOM_LIMIT:
+            out = pd.concat(temp, ignore_index=True)
+            ext = 'csv' if to_csv else 'xlsx'
+            path = os.path.join(input_folder, f"流水汇总_{idx}.{ext}")
+            if to_csv:
+                out.to_csv(path, index=False, encoding='utf-8-sig')
+            else:
+                write_df_to_excel(out, path, list(TEXT_COLUMNS))
+            print(f"已生成：{path}（共 {len(out)} 行）")
+            idx += 1
+            temp = []
+            rows = 0
+        temp.append(df)
+        rows += count
+    if temp:
+        out = pd.concat(temp, ignore_index=True)
+        ext = 'csv' if to_csv else 'xlsx'
+        path = os.path.join(input_folder, f"流水汇总_{idx}.{ext}")
+        if to_csv:
+            out.to_csv(path, index=False, encoding='utf-8-sig')
+        else:
+            write_df_to_excel(out, path, list(TEXT_COLUMNS))
+        print(f"已生成：{path}（共 {len(out)} 行）")
+
+    # 大数据量索引号拆分输出
+    for idx_key, df in large.items():
+        parts = math.ceil(len(df) / CUSTOM_LIMIT)
+        for i in range(parts):
+            seg = df.iloc[i*CUSTOM_LIMIT:(i+1)*CUSTOM_LIMIT]
+            ext = 'csv' if to_csv else 'xlsx'
+            path = os.path.join(input_folder, f"流水汇总_{idx_key}_part{i+1}.{ext}")
+            if to_csv:
+                seg.to_csv(path, index=False, encoding='utf-8-sig')
+            else:
+                write_df_to_excel(seg, path, list(TEXT_COLUMNS))
+            print(f"已生成：{path}（共 {len(seg)} 行）")
+
+    print("所有文件合并并输出完毕。")
+    input("按回车键退出...")
+
+
+if __name__ == "__main__":
+    main()
