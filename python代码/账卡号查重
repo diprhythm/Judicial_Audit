@@ -1,0 +1,215 @@
+import argparse
+import logging
+import shutil
+import re
+import sys
+import os
+from pathlib import Path
+from hashlib import md5
+import pandas as pd
+import concurrent.futures
+import warnings
+
+# ====== 配置 ======
+warnings.filterwarnings("ignore", category=UserWarning)
+NUM_ONLY = re.compile(r"[^0-9]")
+INVALID_FN_CHARS = r"\\/:*?\"<>|"
+MAX_FOLDER_NAME = 100  # 文件夹名最大长度
+COPY_RETRIES = 3
+
+# ====== 日志设置 ======
+logger = logging.getLogger("dedupe")
+logger.setLevel(logging.INFO)
+stream_h = logging.StreamHandler(sys.stdout)
+stream_h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s"))
+logger.addHandler(stream_h)
+
+# ====== 工具函数 ======
+
+def safe_folder_name(name: str) -> str:
+    # 过滤不支持字符
+    name = ''.join('_' if c in INVALID_FN_CHARS else c for c in name)
+    # 超长截断并加短 hash
+    if len(name) > MAX_FOLDER_NAME:
+        h = md5(name.encode('utf-8')).hexdigest()[:8]
+        name = name[:MAX_FOLDER_NAME-9] + '_' + h
+    return name
+
+
+def clean_number(s: str) -> str:
+    if s is None:
+        return ''
+    s = str(s).strip()
+    if re.fullmatch(r"\d+\.0+", s):
+        try:
+            s = str(int(float(s)))
+        except:
+            pass
+    return NUM_ONLY.sub('', s)
+
+
+def find_excel_files(root: Path):
+    """
+    Recursively find Excel files, excluding temp, record log and output directories.
+    """
+    files = []
+    for p in root.rglob('*.xls*'):
+        if '~$' in p.name:
+            continue  # skip temporary files
+        # skip history log
+        if '查重记录' in p.name:
+            continue  # skip the record log file itself
+        # skip output directories
+        if any(part in ('重复文件', '存在重复值') for part in p.parts):
+            continue  # skip files under output folders
+        files.append(p)
+    return files
+
+
+def process_file(fp: Path):
+    try:
+        xls = pd.ExcelFile(fp, engine='openpyxl')
+        sheet = next((s for s in xls.sheet_names if '提取' in s), None)
+        if not sheet:
+            logger.warning(f"未找到 '提取' 工作表：{fp.name}")
+            return None
+        df = pd.read_excel(xls, sheet_name=sheet, dtype=str)
+        accounts, cards = [], []
+        for col, lst in [('本账号', accounts), ('本卡号', cards)]:
+            if col in df.columns:
+                for v in df[col].dropna().astype(str).str.strip():
+                    c = clean_number(v)
+                    if c:
+                        lst.append(c)
+        accounts = sorted(set(accounts)); cards = sorted(set(cards))
+        # 合并两者用于分组
+        values = accounts + cards
+        return {
+            '文件路径': str(fp.resolve()),
+            '文件名': fp.name,
+            '账号': '、'.join(accounts),
+            '卡号': '、'.join(cards),
+            'values': values
+        }
+    except Exception as e:
+        logger.error(f"读取失败 {fp.name}: {e}")
+        return None
+
+
+def group_files_by_value(records):
+    # 并查集分组
+    n = len(records)
+    parent = list(range(n))
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+    val_to_idx = {}
+    for i, rec in enumerate(records):
+        for v in rec['values']:
+            if v in val_to_idx:
+                union(i, val_to_idx[v])
+            else:
+                val_to_idx[v] = i
+    groups = {}
+    for i in range(n):
+        r = find(i)
+        groups.setdefault(r, []).append(i)
+    # 只保留两文件以上的
+    return [grp for grp in groups.values() if len(grp) > 1]
+
+
+def save_records(record_df: pd.DataFrame, dup_df: pd.DataFrame, path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with pd.ExcelWriter(path, engine='openpyxl') as w:
+        record_df.to_excel(w, index=False, sheet_name='查重流水')
+        dup_df.to_excel(w, index=False, sheet_name='重复值')
+
+
+def main():
+    parser = argparse.ArgumentParser(description='账号/卡号查重并分组复制')
+    parser.add_argument('--path', help='待查重根目录')
+    parser.add_argument('--threads', type=int, default=8, help='并发线程数')
+    parser.add_argument('--dry-run', action='store_true', help='仅打印不复制')
+    args = parser.parse_args()
+    root = Path(args.path) if args.path else Path(input('请输入查重路径: ').strip())
+    # 查找工作簿
+    files = find_excel_files(root)
+    total = len(files)
+    logger.info(f"共找到 {total} 个工作簿，开始读取……")
+    # 解析提取
+    records = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as pool:
+        futures = {pool.submit(process_file, f): f for f in files}
+        for i, fut in enumerate(concurrent.futures.as_completed(futures), 1):
+            fp = futures[fut]
+            logger.info(f"正在处理 {i}/{total}：{fp.name}")
+            rec = fut.result()
+            if rec:
+                records.append(rec)
+    if not records:
+        logger.info("无有效记录，退出。")
+        sys.exit(0)
+    # 构建记录 DataFrame
+    record_df = pd.DataFrame([{k: v for k, v in rec.items() if k != 'values'} for rec in records])
+    # 分组
+    groups = group_files_by_value(records)
+    if not groups:
+        logger.info("未检测到重复值。")
+        # 仍写入空日志
+        save_records(record_df, pd.DataFrame(columns=['所属集群', '文件路径', '文件名', '账号', '卡号']), root / '查重记录.xlsx')
+        sys.exit(0)
+    # 复制并收集重复值
+    dup_list = []
+    for grp in groups:
+        vals = sorted({v for idx in grp for v in records[idx]['values']})
+        if len(vals) <= 3:
+            cname = '、'.join(vals)
+        else:
+            cname = '、'.join(vals[:3]) + '…etc'
+        cname = safe_folder_name(cname)
+        folder = root / cname
+        if not args.dry_run:
+            folder.mkdir(parents=True, exist_ok=True)
+        logger.info(f"集群 '{cname}'：复制 {len(grp)} 个文件")
+        for idx in grp:
+            rec = records[idx]
+            src = Path(rec['文件路径'])
+            filename = rec['文件名']
+            base, ext = os.path.splitext(filename)
+            dst = folder / filename
+            counter = 1
+            while dst.exists():
+                dst = folder / f"{base}_{counter}{ext}"
+                counter += 1
+            if args.dry_run:
+                logger.debug(f"[DRY] {src} -> {dst}")
+            else:
+                for attempt in range(COPY_RETRIES):
+                    try:
+                        shutil.copy2(src, dst)
+                        break
+                    except Exception as e:
+                        logger.warning(f"第{attempt+1}次复制失败: {e}")
+                else:
+                    logger.error(f"复制失败: {src}")
+            dup_list.append({
+                '所属集群': cname,
+                '文件路径': rec['文件路径'],
+                '文件名': dst.name,
+                '账号': rec['账号'],
+                '卡号': rec['卡号'],
+            })
+    dup_df = pd.DataFrame(dup_list).drop_duplicates()
+    save_records(record_df, dup_df, root / '查重记录.xlsx')
+    logger.info(f"共检测到 {len(dup_df)} 条重复记录，详见：{root/'查重记录.xlsx'}")
+    logger.info("查重完成。")
+
+
+if __name__ == '__main__':
+    main()
