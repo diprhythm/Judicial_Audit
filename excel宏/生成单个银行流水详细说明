@@ -1,0 +1,110 @@
+Sub 生成说明()
+    Dim wsActive As Worksheet
+    Dim wsExtract As Worksheet
+    Dim wsAccountInfo As Worksheet
+    Dim accountNumber As String
+    Dim accountFound As Boolean
+    Dim accountRow As Range
+    Dim openDate As String
+    Dim closeDate As String
+    Dim formulaCheckRange As Range
+    Dim hasBalanceDifference As Boolean
+    Dim result As String
+    Dim lastRow As Long
+    Dim accountColumn As Range
+    Dim cell As Range
+    
+    ' 设置当前活跃工作簿中的"提取"表
+    Set wsActive = ActiveWorkbook.ActiveSheet
+    On Error Resume Next
+    Set wsExtract = ActiveWorkbook.Worksheets("提取")
+    On Error GoTo 0
+    If wsExtract Is Nothing Then
+        MsgBox "未找到'提取'表，请检查！", vbExclamation
+        Exit Sub
+    End If
+
+    ' 获取本账号
+    accountNumber = Trim(wsExtract.Cells(2, 2).Value) ' 假设账号在"提取"表的B列，表头下方第一个单元格
+    If accountNumber = "" Then
+        MsgBox "未找到本账号，请检查！", vbExclamation
+        Exit Sub
+    End If
+
+    ' 找到"账户信息"表
+    Dim ws As Worksheet
+    accountFound = False
+    For Each ws In ActiveWorkbook.Worksheets
+        If InStr(1, ws.Name, "账户信息") > 0 Then
+            Set wsAccountInfo = ws
+            Exit For
+        End If
+    Next ws
+    If wsAccountInfo Is Nothing Then
+        MsgBox "未找到包含'账户信息'的表，请检查！", vbExclamation
+        Exit Sub
+    End If
+
+    ' 获取交易账号列的最后一行，限制搜索范围
+    lastRow = wsAccountInfo.Cells(wsAccountInfo.Rows.Count, 4).End(xlUp).Row
+    Set accountColumn = wsAccountInfo.Range("D1:D" & lastRow) ' 假设交易账号在D列
+
+    ' 在"账户信息"表中匹配账号
+    For Each cell In accountColumn
+        If Trim(cell.Value) = accountNumber Then
+            Set accountRow = cell.EntireRow
+            accountFound = True
+            Exit For
+        End If
+    Next cell
+
+    If Not accountFound Then
+        MsgBox "未找到该账号，请检查！", vbExclamation
+        Exit Sub
+    End If
+
+    ' 获取开户时间
+    openDate = Trim(accountRow.Cells(5).Value) ' 假设开户时间在E列
+    If IsDate(openDate) Then
+        openDate = Format(openDate, "yyyy/m/d")
+    Else
+        openDate = ""
+    End If
+
+    ' 获取销户时间
+    closeDate = Trim(accountRow.Cells(13).Value) ' 假设销户日期在M列
+    If IsDate(closeDate) Then
+        closeDate = Format(closeDate, "yyyy/m/d")
+    Else
+        closeDate = ""
+    End If
+
+    ' 检查公式校验
+    lastRow = wsExtract.Cells(wsExtract.Rows.Count, "J").End(xlUp).Row ' 假设公式校验在J列
+    Set formulaCheckRange = wsExtract.Range("J2:J" & lastRow)
+    hasBalanceDifference = False
+    For Each cell In formulaCheckRange
+        If IsNumeric(cell.Value) And cell.Value <> 0 Then
+            hasBalanceDifference = True
+            Exit For
+        End If
+    Next cell
+
+    ' 生成结果
+    result = ""
+    If openDate <> "" Then result = result & "开户时间" & openDate & ";"
+    If closeDate <> "" Then result = result & "销户时间" & closeDate & ";"
+    If hasBalanceDifference Then result = result & "存在余额差异"
+
+    ' 输出结果到当前选中的单元格
+    If result = "" Then
+        MsgBox "未生成任何结果", vbInformation
+    Else
+        If Not Selection Is Nothing Then
+            Selection.Value = result
+            MsgBox "结果已写入选中单元格", vbInformation
+        Else
+            MsgBox "请选中一个单元格以写入结果", vbExclamation
+        End If
+    End If
+End Sub
