@@ -1,0 +1,190 @@
+Option Explicit
+
+' 将选择范围向下裁剪到最后一个非空单元格（忽略底部空白）
+Private Function EffectiveCalcRange(ByVal calcCol As Range) As Range
+    Dim sh As Worksheet
+    Dim lastUsed As Long
+    Dim firstRow As Long
+    
+    Set sh = calcCol.Worksheet
+    firstRow = calcCol.Rows(1).Row
+    
+    Dim f As Range
+    On Error Resume Next
+    Set f = calcCol.Find(What:="*", LookIn:=xlFormulas, LookAt:=xlPart, _
+                         SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
+    On Error GoTo 0
+    
+    If f Is Nothing Then
+        ' 整列都为空
+        Set EffectiveCalcRange = sh.Range(sh.Cells(firstRow, calcCol.Column), sh.Cells(firstRow, calcCol.Column))
+    Else
+        lastUsed = f.Row
+        Set EffectiveCalcRange = sh.Range(sh.Cells(firstRow, calcCol.Column), sh.Cells(lastUsed, calcCol.Column))
+    End If
+End Function
+
+' 将一组行号压缩为若干连续区间，返回字符串数组（如 "2~118"）
+Private Function ToIntervals(ByRef rowsArr() As Long, ByVal cnt As Long) As Variant
+    Dim i As Long, startRow As Long, prevRow As Long
+    Dim tmp() As String
+    Dim k As Long
+    
+    If cnt = 0 Then
+        ToIntervals = Array()
+        Exit Function
+    End If
+    
+    ReDim tmp(1 To cnt) ' 最多 cnt 个区间（全不连续）
+    startRow = rowsArr(1)
+    prevRow = rowsArr(1)
+    k = 0
+    
+    For i = 2 To cnt
+        If rowsArr(i) = prevRow + 1 Then
+            prevRow = rowsArr(i)
+        Else
+            k = k + 1
+            tmp(k) = CStr(startRow) & "~" & CStr(prevRow)
+            startRow = rowsArr(i)
+            prevRow = rowsArr(i)
+        End If
+    Next i
+    k = k + 1
+    tmp(k) = CStr(startRow) & "~" & CStr(prevRow)
+    
+    ReDim Preserve tmp(1 To k)
+    ToIntervals = tmp
+End Function
+
+Public Sub 标注行区间()
+    Dim msg As String
+    Dim listRange As Range, calcRange As Range, effCalc As Range
+    Dim sh As Worksheet
+    
+    ' 1) 选择“待匹配列表”（你要在其右侧写结果的一列/多格）
+    msg = "请选择【待匹配列表】（一列内的若干单元格，宏将在其右侧写入行区间）："
+    On Error Resume Next
+    Set listRange = Application.InputBox(prompt:=msg, Type:=8)
+    On Error GoTo 0
+    If listRange Is Nothing Then Exit Sub
+    If listRange.Columns.Count <> 1 Then
+        MsgBox "请只选择一列中的若干单元格。", vbExclamation
+        Exit Sub
+    End If
+    Set sh = listRange.Worksheet
+    
+    ' 2) 选择“计算区域”（通常整列；宏会忽略底部空白）
+    msg = "请选择【计算区域】（通常整列；宏将自动忽略该列底部空白）："
+    On Error Resume Next
+    Set calcRange = Application.InputBox(prompt:=msg, Type:=8)
+    On Error GoTo 0
+    If calcRange Is Nothing Then Exit Sub
+    If calcRange.Columns.Count <> 1 Then
+        MsgBox "计算区域需为单列。", vbExclamation
+        Exit Sub
+    End If
+    
+    ' 2.1) 裁剪计算区域到底部最后一个非空行
+    Set effCalc = EffectiveCalcRange(calcRange.Columns(1))
+    
+    ' 3) 读取计算区域为数组，加速匹配
+    Dim arr As Variant
+    Dim baseRow As Long, i As Long
+    baseRow = effCalc.Rows(1).Row
+    arr = effCalc.Value ' 可能为二维数组 (r,1)
+    
+    Dim totalRows As Long
+    totalRows = effCalc.Rows.Count
+    
+    ' 4) 先计算每个列表单元的区间结果，并统计最大区间数，以便一次性插入列
+    Dim resultIntervals() As Variant
+    Dim maxIntervals As Long
+    Dim r As Range
+    Dim v As String
+    
+    ReDim resultIntervals(1 To listRange.Rows.Count)
+    maxIntervals = 0
+    
+    Dim rowHits() As Long
+    ReDim rowHits(1 To totalRows)
+    
+    Dim hitCount As Long, rowIdx As Long, listIdx As Long
+    
+    listIdx = 0
+    For Each r In listRange.Cells
+        listIdx = listIdx + 1
+        v = CStr(r.Value)
+        If Len(v) = 0 Then
+            resultIntervals(listIdx) = Array()
+        Else
+            ' 收集所有匹配行号（绝对行号）
+            hitCount = 0
+            For i = 1 To totalRows
+                If CStr(arr(i, 1)) = v Then
+                    hitCount = hitCount + 1
+                    rowHits(hitCount) = baseRow + i - 1
+                End If
+            Next i
+            
+            If hitCount = 0 Then
+                resultIntervals(listIdx) = Array()
+            Else
+                ' 将命中行号排序（从小到大）——数组已按行读取，天然有序，无需排序
+                Dim tmpRows() As Long
+                ReDim tmpRows(1 To hitCount)
+                For i = 1 To hitCount
+                    tmpRows(i) = rowHits(i)
+                Next i
+                
+                ' 压缩为区间
+                resultIntervals(listIdx) = ToIntervals(tmpRows, hitCount)
+                If UBound(resultIntervals(listIdx)) + 0 > maxIntervals Then
+                    maxIntervals = UBound(resultIntervals(listIdx))
+                End If
+            End If
+        End If
+    Next r
+    
+    If maxIntervals = 0 Then
+        ' 没有任何命中，仍插入一列写空，避免误解
+        maxIntervals = 1
+    End If
+    
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    
+    ' 5) 在列表右侧插入 maxIntervals 列
+    Dim insCol As Long
+    insCol = listRange.Column + 1
+    sh.Columns(insCol).Resize(, maxIntervals).Insert Shift:=xlToRight
+    
+    ' 6) 将区间写入新插入的列（每个值可能有多个区间）
+    Dim rowOffset As Long
+    rowOffset = 0
+    listIdx = 0
+    For Each r In listRange.Cells
+        listIdx = listIdx + 1
+        Dim ivs As Variant
+        ivs = resultIntervals(listIdx) ' 可能是空数组
+        
+        Dim j As Long
+        For j = 1 To maxIntervals
+            Dim outText As String
+            outText = ""
+            If IsArray(ivs) Then
+                If j <= UBound(ivs) Then
+                    outText = ivs(j)
+                End If
+            End If
+            sh.Cells(r.Row, insCol + j - 1).Value = outText
+        Next j
+    Next r
+    
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+    
+    MsgBox "完成：已在选中列表右侧写入对应出现行区间（以 Excel 行号为准）。", vbInformation
+End Sub
+
+
