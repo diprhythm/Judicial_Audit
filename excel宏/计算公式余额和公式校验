@@ -1,4 +1,4 @@
-Sub 计算公式余额和公式校验()
+Sub 计算校验()
     Dim ws As Worksheet
     Dim selectedCell As Range
     Dim lastRow As Long
