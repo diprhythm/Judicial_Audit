@@ -1,0 +1,237 @@
+==================================================台账匹配流水汇总表_finial_version=====================================================
+-- 固定字符集，避免 NBSP 等字符在 PREPARE/EXECUTE 时出编码幺蛾子
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+WITH
+-- 0) 基表：姓名是否唯一
+name_stats AS (
+  SELECT `投资人姓名`, COUNT(*) AS name_cnt
+  FROM `线下台账汇总表`
+  GROUP BY `投资人姓名`
+),
+
+-- 基表扩展 + 姓名规范化（NBSP -> 空格；再正则去空白与括号；小写）
+base_ext AS (
+  SELECT
+    x.*,
+    ns.name_cnt,
+    LOWER(
+      REGEXP_REPLACE(
+        REPLACE(TRIM(COALESCE(x.`投资人姓名`, '')), CAST(0xC2A0 AS CHAR CHARACTER SET utf8mb4), ' '),
+        _utf8mb4'[[:space:]()（）]+',
+        ''
+      )
+    ) AS `base_name_norm`
+  FROM `线下台账汇总表` x
+  LEFT JOIN name_stats ns
+    ON ns.`投资人姓名` = x.`投资人姓名`
+),
+
+-- A) 明细唯一行号（只取需要的列；不引用可能不存在的 *_norm）
+tx_with_uid_raw AS (
+  SELECT
+    ROW_NUMBER() OVER (
+      ORDER BY
+        t.`日期`, t.`交易流水号`, t.`索引号`,
+        t.`本账号名称`, t.`本账号`, t.`本卡号`,
+        t.`对手户名`, t.`对手户名_审计专用`,
+        t.`对手账/卡号`, t.`对手开户行`,
+        t.`收入`, t.`支出`
+    ) AS tx_uid,
+    t.`日期`,
+    t.`身份认证情况`,
+    t.`映射_Identity_Matching_Key`,
+    t.`收入`,
+    t.`支出`,
+    t.`对手户名`,
+    t.`对手户名_审计专用`,
+    t.`本账号名称`,
+    t.`映射_户名`
+  FROM `永坤资金池账户交易明细_身份映射_20250821181659` t
+),
+
+-- B) 明细侧：统一现算规范化列
+tx_with_uid AS (
+  SELECT
+    u.tx_uid,
+    u.`日期`,
+    u.`身份认证情况`,
+    u.`映射_Identity_Matching_Key`,
+    u.`收入`,
+    u.`支出`,
+
+    LOWER(
+      REGEXP_REPLACE(
+        REPLACE(TRIM(COALESCE(u.`对手户名`, '')), CAST(0xC2A0 AS CHAR CHARACTER SET utf8mb4), ' '),
+        _utf8mb4'[[:space:]()（）]+',
+        ''
+      )
+    ) AS `对手户名_norm`,
+
+    LOWER(
+      REGEXP_REPLACE(
+        REPLACE(TRIM(COALESCE(u.`对手户名_审计专用`, '')), CAST(0xC2A0 AS CHAR CHARACTER SET utf8mb4), ' '),
+        _utf8mb4'[[:space:]()（）]+',
+        ''
+      )
+    ) AS `对手户名_审计专用_norm`,
+
+    LOWER(
+      REGEXP_REPLACE(
+        REPLACE(TRIM(COALESCE(u.`本账号名称`, '')), CAST(0xC2A0 AS CHAR CHARACTER SET utf8mb4), ' '),
+        _utf8mb4'[[:space:]()（）]+',
+        ''
+      )
+    ) AS `本账号名称_norm`,
+
+    LOWER(
+      REGEXP_REPLACE(
+        REPLACE(TRIM(COALESCE(u.`映射_户名`, '')), CAST(0xC2A0 AS CHAR CHARACTER SET utf8mb4), ' '),
+        _utf8mb4'[[:space:]()（）]+',
+        ''
+      )
+    ) AS `映射_户名_norm`
+  FROM tx_with_uid_raw u
+),
+
+-- C) 统一排除条件（任一对手姓名_norm = 本账号名称_norm）
+exclusion AS (
+  SELECT
+    tx_uid,
+    (
+      (`对手户名_norm` IS NOT NULL AND `本账号名称_norm` IS NOT NULL AND `对手户名_norm` = `本账号名称_norm`)
+      OR (`对手户名_审计专用_norm` IS NOT NULL AND `本账号名称_norm` IS NOT NULL AND `对手户名_审计专用_norm` = `本账号名称_norm`)
+      OR (`映射_户名_norm` IS NOT NULL AND `本账号名称_norm` IS NOT NULL AND `映射_户名_norm` = `本账号名称_norm`)
+    ) AS need_exclude
+  FROM tx_with_uid
+),
+
+-- 1) 三路姓名匹配（全部加 AND NOT 排除）
+m1 AS (
+  SELECT
+    x.`序号_Primary_Key`           AS base_pk,
+    x.`Identity_Matching_Key`       AS base_imk,
+    x.`投资人姓名`                  AS base_name,
+    COALESCE(x.name_cnt,1)          AS name_cnt,
+    u.`tx_uid`,
+    u.`日期`,
+    u.`身份认证情况`,
+    u.`映射_Identity_Matching_Key`  AS t_imk,
+    u.`收入`,
+    u.`支出`
+  FROM base_ext x
+  JOIN tx_with_uid u
+    ON x.`base_name_norm` = u.`对手户名_norm`
+  JOIN exclusion e
+    ON e.tx_uid = u.tx_uid AND e.need_exclude = FALSE
+),
+m2 AS (
+  SELECT
+    x.`序号_Primary_Key`           AS base_pk,
+    x.`Identity_Matching_Key`       AS base_imk,
+    x.`投资人姓名`                  AS base_name,
+    COALESCE(x.name_cnt,1)          AS name_cnt,
+    u.`tx_uid`,
+    u.`日期`,
+    u.`身份认证情况`,
+    u.`映射_Identity_Matching_Key`  AS t_imk,
+    u.`收入`,
+    u.`支出`
+  FROM base_ext x
+  JOIN tx_with_uid u
+    ON x.`base_name_norm` = u.`对手户名_审计专用_norm`
+  JOIN exclusion e
+    ON e.tx_uid = u.tx_uid AND e.need_exclude = FALSE
+),
+m3 AS (
+  SELECT
+    x.`序号_Primary_Key`           AS base_pk,
+    x.`Identity_Matching_Key`       AS base_imk,
+    x.`投资人姓名`                  AS base_name,
+    COALESCE(x.name_cnt,1)          AS name_cnt,
+    u.`tx_uid`,
+    u.`日期`,
+    u.`身份认证情况`,
+    u.`映射_Identity_Matching_Key`  AS t_imk,
+    u.`收入`,
+    u.`支出`
+  FROM base_ext x
+  JOIN tx_with_uid u
+    ON x.`base_name_norm` = u.`映射_户名_norm`
+  JOIN exclusion e
+    ON e.tx_uid = u.tx_uid AND e.need_exclude = FALSE
+),
+
+-- 2) 合并命中并去重
+matched AS (
+  SELECT * FROM m1
+  UNION ALL
+  SELECT * FROM m2
+  UNION ALL
+  SELECT * FROM m3
+),
+dedup AS (
+  SELECT
+    base_pk,
+    ANY_VALUE(base_imk)       AS base_imk,
+    ANY_VALUE(base_name)      AS base_name,
+    ANY_VALUE(name_cnt)       AS name_cnt,
+    tx_uid,
+    MAX(`日期`)               AS `日期`,
+    MAX(`身份认证情况`)       AS `身份认证情况`,
+    MAX(t_imk)                AS t_imk,
+    MAX(COALESCE(`收入`,0))   AS `收入`,
+    MAX(COALESCE(`支出`,0))   AS `支出`
+  FROM matched
+  GROUP BY base_pk, tx_uid
+),
+
+-- 3) 聚合 8 个指标（“投资人身份映射成功”为成功口径）
+agg AS (
+  SELECT
+    base_pk,
+    SUM(CASE WHEN `日期` >= '2016-01-01' THEN `收入` ELSE 0 END)
+      AS `吸金账户_收_投资人入金_对手户名匹配_2016年之后`,
+    SUM(CASE WHEN `日期` >= '2016-01-01'
+           AND `身份认证情况` = '投资人身份映射成功'
+           AND (name_cnt = 1 OR t_imk = base_imk) THEN `收入` ELSE 0 END)
+      AS `吸金账户_收_投资人入金_对手户名匹配+身份映射成功_2016年之后`,
+    SUM(CASE WHEN `日期` < '2016-01-01' THEN `收入` ELSE 0 END)
+      AS `吸金账户_收_投资人入金_对手户名匹配_2016年之前`,
+    SUM(CASE WHEN `日期` < '2016-01-01'
+           AND `身份认证情况` = '投资人身份映射成功'
+           AND (name_cnt = 1 OR t_imk = base_imk) THEN `收入` ELSE 0 END)
+      AS `吸金账户_收_投资人入金_对手户名匹配+身份映射成功_2016年之前`,
+
+    SUM(CASE WHEN `日期` >= '2016-01-01' THEN `支出` ELSE 0 END)
+      AS `吸金账户_支_投资人出金_对手户名匹配_2016年之后`,
+    SUM(CASE WHEN `日期` >= '2016-01-01'
+           AND `身份认证情况` = '投资人身份映射成功'
+           AND (name_cnt = 1 OR t_imk = base_imk) THEN `支出` ELSE 0 END)
+      AS `吸金账户_支_投资人出金_对手户名匹配+身份映射成功_2016年之后`,
+    SUM(CASE WHEN `日期` < '2016-01-01' THEN `支出` ELSE 0 END)
+      AS `吸金账户_支_投资人出金_对手户名匹配_2016年之前`,
+    SUM(CASE WHEN `日期` < '2016-01-01'
+           AND `身份认证情况` = '投资人身份映射成功'
+           AND (name_cnt = 1 OR t_imk = base_imk) THEN `支出` ELSE 0 END)
+      AS `吸金账户_支_投资人出金_对手户名匹配+身份映射成功_2016年之前`
+  FROM dedup
+  GROUP BY base_pk
+)
+
+-- 4) 基表在左拼 8 指标
+SELECT
+  x.*,
+  COALESCE(a.`吸金账户_收_投资人入金_对手户名匹配_2016年之后`, 0)              AS `吸金账户_收_投资人入金_对手户名匹配_2016年之后`,
+  COALESCE(a.`吸金账户_收_投资人入金_对手户名匹配+身份映射成功_2016年之后`, 0) AS `吸金账户_收_投资人入金_对手户名匹配+身份映射成功_2016年之后`,
+  COALESCE(a.`吸金账户_收_投资人入金_对手户名匹配_2016年之前`, 0)              AS `吸金账户_收_投资人入金_对手户名匹配_2016年之前`,
+  COALESCE(a.`吸金账户_收_投资人入金_对手户名匹配+身份映射成功_2016年之前`, 0) AS `吸金账户_收_投资人入金_对手户名匹配+身份映射成功_2016年之前`,
+  COALESCE(a.`吸金账户_支_投资人出金_对手户名匹配_2016年之后`, 0)              AS `吸金账户_支_投资人出金_对手户名匹配_2016年之后`,
+  COALESCE(a.`吸金账户_支_投资人出金_对手户名匹配+身份映射成功_2016年之后`, 0) AS `吸金账户_支_投资人出金_对手户名匹配+身份映射成功_2016年之后`,
+  COALESCE(a.`吸金账户_支_投资人出金_对手户名匹配_2016年之前`, 0)              AS `吸金账户_支_投资人出金_对手户名匹配_2016年之前`,
+  COALESCE(a.`吸金账户_支_投资人出金_对手户名匹配+身份映射成功_2016年之前`, 0) AS `吸金账户_支_投资人出金_对手户名匹配+身份映射成功_2016年之前`
+FROM base_ext x
+LEFT JOIN agg a
+  ON a.base_pk = x.`序号_Primary_Key`
+ORDER BY x.`序号_Primary_Key`;
+
