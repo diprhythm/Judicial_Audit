@@ -1,0 +1,48 @@
+============================建立索引===================================
+
+-- 1) 线下台账汇总表_20250813 的 投资人姓名
+ALTER TABLE `线下台账汇总表_20250813`
+  ADD INDEX idx_投资人姓名 (`投资人姓名`);
+
+-- 2) 永坤资金池账户交易明细_身份映射_20250814114725 的 对手户名
+ALTER TABLE `永坤资金池账户交易明细_身份映射_20250814114725`
+  ADD INDEX idx_对手户名 (`对手户名`);
+
+-- 3) 永坤资金池账户交易明细_身份映射_20250814114725 的 映射_户名
+ALTER TABLE `永坤资金池账户交易明细_身份映射_20250814114725`
+  ADD INDEX idx_映射_户名 (`映射_户名`);
+  
+ -- 4) 永坤资金池账户交易明细_身份映射_20250814114725 的 对手户名_审计专用
+ALTER TABLE `永坤资金池账户交易明细_身份映射_20250814114725`
+  ADD INDEX idx_对手户名_审计专用 (`对手户名_审计专用`);
+
+
+
+
+===========================提取交易明细===============================
+SELECT DISTINCT
+  t.*
+FROM `永坤资金池账户交易明细_身份映射_20250821181659` AS t
+WHERE
+  (
+    EXISTS (SELECT 1 FROM `线下台账汇总表` AS x WHERE x.`投资人姓名` = t.`对手户名`)
+    OR EXISTS (SELECT 1 FROM `线下台账汇总表` AS x WHERE x.`投资人姓名` = t.`对手户名_审计专用`)
+    OR EXISTS (SELECT 1 FROM `线下台账汇总表` AS x WHERE x.`投资人姓名` = t.`映射_户名`)
+		OR EXISTS (SELECT 1 FROM `线下台账汇总表` AS x WHERE x.`投资人姓名` = t.`对手户名_审计专用_norm2`)
+		OR EXISTS (SELECT 1 FROM `线下台账汇总表` AS x WHERE x.`投资人姓名` = t.`映射_户名_norm`)
+		OR EXISTS (SELECT 1 FROM `线下台账汇总表` AS x WHERE x.`投资人姓名` = t.`对手户名_审计专用_norm`)
+  )
+  -- 排除：对手户名 / 对手户名_审计专用_norm / 映射_户名_norm 任一 等于 本账号名称
+  AND NOT (
+       (t.`对手户名` IS NOT NULL
+    AND t.`本账号名称` IS NOT NULL
+    AND t.`对手户名` = t.`本账号名称`)
+    OR (t.`对手户名_审计专用_norm` IS NOT NULL
+    AND t.`本账号名称` IS NOT NULL
+    AND t.`对手户名_审计专用_norm` = t.`本账号名称`)
+    OR (t.`映射_户名_norm` IS NOT NULL
+    AND t.`本账号名称` IS NOT NULL
+    AND t.`映射_户名_norm` = t.`本账号名称`)
+  );
+
+
