@@ -1,0 +1,345 @@
+==========================身份映射表数据检查===========================
+SELECT *
+FROM 账户身份映射表
+WHERE Identity_Matching_Key LIKE '%；%'
+   OR 账卡号_Primary_Key LIKE '%；%'
+   OR 户名 LIKE '%；%'
+   OR 身份证 LIKE '%；%';
+
+
+
+
+=======================================双表映射_作废================================
+-- 目标表名：永坤资金池账户交易明细_身份映射_yyyyMMddHHmmss
+SET @tbl_name = CONCAT('永坤资金池账户交易明细_身份映射_', DATE_FORMAT(NOW(), '%Y%m%d%H%i%S'));
+
+SET @sql = CONCAT(
+'CREATE TABLE `', @tbl_name, '` AS
+WITH m_dedup AS (
+  SELECT
+    `账卡号_norm`,
+    ANY_VALUE(`Identity_Matching_Key`)  AS `Identity_Matching_Key`,
+    ANY_VALUE(`账卡号_Primary_Key`)     AS `账卡号_Primary_Key`,
+    ANY_VALUE(`户名`)                   AS `映射_户名`,
+    ANY_VALUE(`身份证`)                 AS `映射_身份证`,
+    ANY_VALUE(`开户行_Aggregation`)     AS `映射_开户行_Aggregation`
+  FROM `投资人账户身份映射表`
+  WHERE `账卡号_norm` <> ''''
+  GROUP BY `账卡号_norm`
+)
+SELECT
+  t.*,
+  m.`Identity_Matching_Key`      AS `映射_Identity_Matching_Key`,
+  m.`账卡号_Primary_Key`         AS `映射_账卡号_Primary_Key`,
+  m.`映射_户名`,
+  m.`映射_身份证`,
+  m.`映射_开户行_Aggregation`,
+  CASE
+    WHEN t.`对手账卡号_norm` = '''' THEN ''该笔流水无对手账卡号''
+    WHEN m.`账卡号_Primary_Key` IS NULL THEN ''身份映射表中无该对手账卡号''
+    WHEN CONCAT(IFNULL(t.`对手户名_审计专用`, ''''), IFNULL(m.`映射_身份证`, '''')) = m.`Identity_Matching_Key`
+         THEN ''身份认证成功''
+    WHEN IFNULL(t.`对手户名_审计专用`, '''') <> IFNULL(m.`映射_户名`, '''')
+         THEN ''姓名认证失败''
+    ELSE ''姓名认证失败''
+  END AS `身份认证情况`
+FROM `永坤资金池账户交易明细_生僻字补全_含已取加盟商_20250814` AS t
+LEFT JOIN m_dedup AS m
+  ON t.`对手账卡号_norm` <> ''''
+ AND t.`对手账卡号_norm` = m.`账卡号_norm`
+ORDER BY
+  t.`索引号`,
+  t.`日期`,
+  t.`交易流水号`'
+);
+
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+
+
+
+
+
+
+
+
+================================================================三表映射=================================
+-- 固定在 utf8mb4，防隐式字符集
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- 动态表名
+SET @tbl_name = CONCAT('永坤资金池账户交易明细_身份映射_', DATE_FORMAT(NOW(), '%Y%m%d%H%i%S'));
+
+-- 主体 SQL（B 方案：用 CAST(0xC2A0 AS CHAR CHARACTER SET utf8mb4) 清理 NBSP）
+SET @sql = CONCAT(
+'CREATE TABLE `', @tbl_name, '` AS
+WITH
+-- 1) 流水：规范化 对手卡号 / 对手户名(审计专用)
+normed_t AS (
+  SELECT
+    t.*,
+    NULLIF(
+      TRIM(
+        REPLACE(
+          REPLACE(
+            REPLACE(
+              REPLACE(`对手账/卡号`, _utf8mb4''　'', ''''),                -- 全角空格 U+3000
+              CAST(0xC2A0 AS CHAR CHARACTER SET utf8mb4), ''''            -- NBSP U+00A0
+            ),
+            CHAR(9), ''''                                                 -- Tab
+          ),
+          _utf8mb4'' '', ''''                                             -- 半角空格
+        )
+      ),
+      ''''
+    ) AS `对手账卡号_norm_norm`,
+    NULLIF(TRIM(`对手户名_审计专用`), '''') AS `对手户名_审计专用_norm`
+  FROM `永坤资金池账户交易明细` t
+),
+
+-- 2) 身份映射表：用 账卡号_Primary_Key 规范化得到连接键
+normed_m AS (
+  SELECT
+    NULLIF(
+      TRIM(
+        REPLACE(
+          REPLACE(
+            REPLACE(
+              REPLACE(`账卡号_Primary_Key`, _utf8mb4''　'', ''''),
+              CAST(0xC2A0 AS CHAR CHARACTER SET utf8mb4), ''''
+            ),
+            CHAR(9), ''''
+          ),
+          _utf8mb4'' '', ''''
+        )
+      ),
+      ''''
+    ) AS `账卡号_norm_norm`,
+    `Identity_Matching_Key`,
+    `账卡号_Primary_Key`,
+    NULLIF(TRIM(`户名`), '''')  AS `映射_户名`,
+    NULLIF(TRIM(`身份证`), '''') AS `映射_身份证`,
+    `开户行_Aggregation`        AS `映射_开户行_Aggregation`
+  FROM `账户身份映射表`
+  WHERE NULLIF(
+          TRIM(
+            REPLACE(
+              REPLACE(
+                REPLACE(
+                  REPLACE(`账卡号_Primary_Key`, _utf8mb4''　'', ''''),
+                  CAST(0xC2A0 AS CHAR CHARACTER SET utf8mb4), ''''
+                ),
+                CHAR(9), ''''
+              ),
+              _utf8mb4'' '', ''''
+            )
+          ),
+          ''''
+        ) IS NOT NULL
+),
+
+-- 你保证唯一，这里 Row_Number 只是兜底
+m_dedup AS (
+  SELECT *
+  FROM (
+    SELECT n.*,
+           ROW_NUMBER() OVER (
+             PARTITION BY n.`账卡号_norm_norm`
+             ORDER BY COALESCE(n.`账卡号_Primary_Key`, '''') DESC
+           ) AS rn
+    FROM normed_m n
+  ) z
+  WHERE z.rn = 1
+),
+
+-- 3) 线下台账：IMK/姓名/身份证 统一做「去空白 + 去中英文括号 + lower」
+l_norm AS (
+  SELECT
+    l.*,
+    LOWER(
+      REPLACE(REPLACE(REPLACE(REPLACE(
+        REPLACE(REPLACE(REPLACE(REPLACE(
+          TRIM(COALESCE(l.`Identity_Matching_Key`, '''')),
+          _utf8mb4'' '', ''''      -- 半角空格
+        ), _utf8mb4''　'', ''''    -- 全角空格
+        ), CAST(0xC2A0 AS CHAR CHARACTER SET utf8mb4), ''''   -- NBSP
+        ), CHAR(9), ''''           -- Tab
+        ), _utf8mb4''('', ''''
+      ), _utf8mb4'')'', ''''
+      ), _utf8mb4''（'', ''''
+      ), _utf8mb4''）'', ''''
+    )) AS `台账_IMK_norm`,
+
+    LOWER(
+      REPLACE(REPLACE(REPLACE(REPLACE(
+        REPLACE(REPLACE(REPLACE(REPLACE(
+          TRIM(COALESCE(l.`投资人姓名`, '''')),
+          _utf8mb4'' '', ''''
+        ), _utf8mb4''　'', ''''
+        ), CAST(0xC2A0 AS CHAR CHARACTER SET utf8mb4), ''''
+        ), CHAR(9), ''''
+        ), _utf8mb4''('', ''''
+      ), _utf8mb4'')'', ''''
+      ), _utf8mb4''（'', ''''
+      ), _utf8mb4''）'', ''''
+    )) AS `台账_姓名_norm`,
+
+    LOWER(
+      REPLACE(REPLACE(REPLACE(REPLACE(
+        REPLACE(REPLACE(REPLACE(REPLACE(
+          TRIM(COALESCE(l.`身份证`, '''')),
+          _utf8mb4'' '', ''''
+        ), _utf8mb4''　'', ''''
+        ), CAST(0xC2A0 AS CHAR CHARACTER SET utf8mb4), ''''
+        ), CHAR(9), ''''
+        ), _utf8mb4''('', ''''
+      ), _utf8mb4'')'', ''''
+      ), _utf8mb4''（'', ''''
+      ), _utf8mb4''）'', ''''
+    )) AS `台账_身份证_norm`
+  FROM `线下台账汇总表` l
+),
+
+-- 仅用于“存在性判断”的轻去重，避免一对多放大结果
+l_imk_dedup AS (
+  SELECT `台账_IMK_norm` AS imk_norm, MIN(`序号_Primary_Key`) AS any_pk
+  FROM l_norm
+  WHERE `台账_IMK_norm` IS NOT NULL
+  GROUP BY `台账_IMK_norm`
+),
+l_name_dedup AS (
+  SELECT `台账_姓名_norm` AS name_norm, MIN(`序号_Primary_Key`) AS any_pk
+  FROM l_norm
+  WHERE `台账_姓名_norm` IS NOT NULL
+  GROUP BY `台账_姓名_norm`
+),
+l_id_dedup AS (
+  SELECT `台账_身份证_norm` AS id_norm, MIN(`序号_Primary_Key`) AS any_pk
+  FROM l_norm
+  WHERE `台账_身份证_norm` IS NOT NULL
+  GROUP BY `台账_身份证_norm`
+),
+
+-- 4) 把映射拼到流水右侧，并准备规范化后的 IMK/姓名/身份证 + 对手姓名(审计) 的等口径规范化
+joined_map AS (
+  SELECT
+    t.*,
+    m.`Identity_Matching_Key`    AS `映射_Identity_Matching_Key`,
+    m.`账卡号_Primary_Key`       AS `映射_账卡号_Primary_Key`,
+    m.`映射_户名`,
+    m.`映射_身份证`,
+    m.`映射_开户行_Aggregation`,
+    m.`账卡号_norm_norm`,
+
+    LOWER(
+      REPLACE(REPLACE(REPLACE(REPLACE(
+        REPLACE(REPLACE(REPLACE(REPLACE(
+          TRIM(COALESCE(m.`Identity_Matching_Key`, '''')),
+          _utf8mb4'' '', ''''
+        ), _utf8mb4''　'', ''''
+        ), CAST(0xC2A0 AS CHAR CHARACTER SET utf8mb4), ''''
+        ), CHAR(9), ''''
+        ), _utf8mb4''('', ''''
+      ), _utf8mb4'')'', ''''
+      ), _utf8mb4''（'', ''''
+      ), _utf8mb4''）'', ''''
+    )) AS `映射_IMK_norm`,
+
+    LOWER(
+      REPLACE(REPLACE(REPLACE(REPLACE(
+        REPLACE(REPLACE(REPLACE(REPLACE(
+          TRIM(COALESCE(m.`映射_户名`, '''')),
+          _utf8mb4'' '', ''''
+        ), _utf8mb4''　'', ''''
+        ), CAST(0xC2A0 AS CHAR CHARACTER SET utf8mb4), ''''
+        ), CHAR(9), ''''
+        ), _utf8mb4''('', ''''
+      ), _utf8mb4'')'', ''''
+      ), _utf8mb4''（'', ''''
+      ), _utf8mb4''）'', ''''
+    )) AS `映射_户名_norm`,
+
+    LOWER(
+      REPLACE(REPLACE(REPLACE(REPLACE(
+        REPLACE(REPLACE(REPLACE(REPLACE(
+          TRIM(COALESCE(m.`映射_身份证`, '''')),
+          _utf8mb4'' '', ''''
+        ), _utf8mb4''　'', ''''
+        ), CAST(0xC2A0 AS CHAR CHARACTER SET utf8mb4), ''''
+        ), CHAR(9), ''''
+        ), _utf8mb4''('', ''''
+      ), _utf8mb4'')'', ''''
+      ), _utf8mb4''（'', ''''
+      ), _utf8mb4''）'', ''''
+    )) AS `映射_身份证_norm`,
+
+    -- ★ 新增：同口径规范化 “对手户名_审计专用”，用于与映射姓名精确对比
+    LOWER(
+      REPLACE(REPLACE(REPLACE(REPLACE(
+        REPLACE(REPLACE(REPLACE(REPLACE(
+          TRIM(COALESCE(t.`对手户名_审计专用`, '''')),
+          _utf8mb4'' '', ''''
+        ), _utf8mb4''　'', ''''
+        ), CAST(0xC2A0 AS CHAR CHARACTER SET utf8mb4), ''''
+        ), CHAR(9), ''''
+        ), _utf8mb4''('', ''''
+      ), _utf8mb4'')'', ''''
+      ), _utf8mb4''（'', ''''
+      ), _utf8mb4''）'', ''''
+    )) AS `对手户名_审计专用_norm2`
+
+  FROM normed_t t
+  LEFT JOIN m_dedup m
+    ON t.`对手账卡号_norm_norm` = m.`账卡号_norm_norm`
+)
+
+-- 5) 最终输出 + 三表映证判定 + ★ IMK 成功后再做姓名一致性复核
+SELECT
+  j.*,
+  CASE
+    WHEN j.`对手账卡号_norm_norm` IS NULL THEN _utf8mb4''该笔流水无对手账卡号''
+    WHEN j.`账卡号_norm_norm`     IS NULL THEN _utf8mb4''身份映射表中无该对手账卡号''
+
+    -- ★ 新分支：IMK 背书成功但姓名不一致
+    WHEN l_imk.imk_norm IS NOT NULL
+         AND j.`映射_户名_norm` IS NOT NULL
+         AND j.`对手户名_审计专用_norm2` IS NOT NULL
+         AND j.`映射_户名_norm` <> j.`对手户名_审计专用_norm2`
+      THEN _utf8mb4''对手姓名与映射姓名不一致''
+
+    -- IMK 背书成功且（姓名一致或缺一边）→ 仍判成功
+    WHEN l_imk.imk_norm IS NOT NULL THEN _utf8mb4''投资人身份映射成功''
+
+    WHEN l_name.name_norm IS NOT NULL THEN _utf8mb4''身份证号映射失败''
+    WHEN l_id.id_norm     IS NOT NULL THEN _utf8mb4''姓名映射失败''
+    ELSE _utf8mb4''姓名及身份证号均映射失败''
+  END AS `身份认证情况`
+FROM joined_map j
+LEFT JOIN l_imk_dedup  l_imk  ON j.`映射_IMK_norm`   = l_imk.imk_norm
+LEFT JOIN l_name_dedup l_name ON j.`映射_户名_norm`  = l_name.name_norm
+LEFT JOIN l_id_dedup   l_id   ON j.`映射_身份证_norm` = l_id.id_norm
+ORDER BY j.`索引号`, j.`日期`, j.`交易流水号`;'
+);
+
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
