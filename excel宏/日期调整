@@ -1,0 +1,105 @@
+Option Explicit
+
+Sub ConvertDateTime()
+    Dim ws        As Worksheet: Set ws = ActiveSheet
+    Dim isSame    As VbMsgBoxResult
+    Dim firstRow  As Long, lastRow As Long, outCol As Long
+    Dim selRng    As Range, dateRng As Range, timeRng As Range
+    Dim i         As Long
+    Dim s         As String
+    Dim dStr      As String, tStr As String, fullStr As String
+    
+    ' 性能优化
+    With Application
+        .ScreenUpdating = False
+        .Calculation = xlCalculationManual
+    End With
+    
+    ' 选择模式
+    isSame = MsgBox("日期和时间是否在同一单元格？" & vbCrLf & _
+                    "【是】→ 单列模式" & vbCrLf & _
+                    "【否】→ 双列模式", _
+                    vbYesNoCancel + vbQuestion, "选择模式")
+    If isSame = vbCancel Then GoTo Finish
+    
+    If isSame = vbYes Then
+        ' 单列模式
+        Set selRng = Application.InputBox("请选择存放日期时间的列（单列）", "选择列", Type:=8)
+        If selRng Is Nothing Or selRng.Columns.Count <> 1 Then GoTo Finish
+        
+        firstRow = selRng.Row
+        lastRow = ws.Cells(ws.Rows.Count, selRng.Column).End(xlUp).Row
+        outCol = selRng.Column + 1
+        ws.Columns(outCol).Insert Shift:=xlToRight
+        
+        For i = firstRow To lastRow
+            s = Trim(CStr(ws.Cells(i, selRng.Column).Value))
+            ' 只处理至少 8 位且前 8 位全为数字的情况
+            If Len(s) >= 8 And IsNumeric(Left(s, 8)) Then
+                ws.Cells(i, outCol).Value = ParseDateTimeString(s)
+                ws.Cells(i, outCol).NumberFormat = "yyyy/m/d hh:mm:ss"
+            End If
+        Next i
+        
+    Else
+        ' 双列模式
+        Set dateRng = Application.InputBox("请选择“日期”列（单列）", "选择日期列", Type:=8)
+        Set timeRng = Application.InputBox("请选择“时间”列（单列）", "选择时间列", Type:=8)
+        If dateRng Is Nothing Or timeRng Is Nothing _
+           Or dateRng.Columns.Count <> 1 Or timeRng.Columns.Count <> 1 Then GoTo Finish
+        
+        firstRow = Application.Min(dateRng.Row, timeRng.Row)
+        lastRow = Application.Max( _
+                     ws.Cells(ws.Rows.Count, dateRng.Column).End(xlUp).Row, _
+                     ws.Cells(ws.Rows.Count, timeRng.Column).End(xlUp).Row)
+        outCol = timeRng.Column + 1
+        ws.Columns(outCol).Insert Shift:=xlToRight
+        
+        For i = firstRow To lastRow
+            dStr = Trim(CStr(ws.Cells(i, dateRng.Column).Value))
+            tStr = Trim(CStr(ws.Cells(i, timeRng.Column).Value))
+            ' 只处理日期至少 8 位且为数字的行
+            If Len(dStr) >= 8 And IsNumeric(Left(dStr, 8)) Then
+                fullStr = dStr & tStr
+                ws.Cells(i, outCol).Value = ParseDateTimeString(fullStr)
+                ws.Cells(i, outCol).NumberFormat = "yyyy/m/d hh:mm:ss"
+            End If
+        Next i
+    End If
+    
+    MsgBox "转换完成！", vbInformation
+
+Finish:
+    With Application
+        .Calculation = xlCalculationAutomatic
+        .ScreenUpdating = True
+    End With
+End Sub
+
+'================================================================
+' 将任意长度的 yyyyMMdd[hhmmss...] 字符串
+' 截取/补零到 14 位，解析成 Date 返回
+Function ParseDateTimeString(ByVal s As String) As Date
+    On Error GoTo ErrHandler
+    Dim core As String
+    Dim y As Integer, m As Integer, d As Integer
+    Dim hh As Integer, nn As Integer, ss As Integer
+    
+    ' 截取前 14 位，不足补“0”
+    core = Left(s & String(14, "0"), 14)
+    
+    y = CInt(Mid(core, 1, 4))
+    m = CInt(Mid(core, 5, 2))
+    d = CInt(Mid(core, 7, 2))
+    hh = CInt(Mid(core, 9, 2))
+    nn = CInt(Mid(core, 11, 2))
+    ss = CInt(Mid(core, 13, 2))
+    
+    ParseDateTimeString = DateSerial(y, m, d) + TimeSerial(hh, nn, ss)
+    Exit Function
+ErrHandler:
+    ' 出错时返回 0（相当于 1900-01-00 00:00:00），或你也可以设成 Now()
+    ParseDateTimeString = 0
+End Function
+
+
